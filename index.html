@@ -20,10 +20,7 @@
             getAuth, 
             onAuthStateChanged, 
             signInWithCustomToken, 
-            GoogleAuthProvider, 
-            signInWithPopup, 
-            signInWithRedirect,
-            getRedirectResult,
+            signInAnonymously,
             signOut, 
             setPersistence, 
             browserLocalPersistence 
@@ -33,9 +30,7 @@
         const initFirebase = async () => {
             try {
                 if (typeof __firebase_config === 'undefined') {
-                    console.error("Configuração do Firebase em falta!");
-                    window.dispatchEvent(new Event('firebase-error'));
-                    return;
+                    await new Promise(r => setTimeout(r, 1000));
                 }
 
                 const firebaseConfig = JSON.parse(__firebase_config);
@@ -43,40 +38,32 @@
                 const auth = getAuth(app);
                 
                 await setPersistence(auth, browserLocalPersistence);
-                
                 const db = getFirestore(app);
-                const googleProvider = new GoogleAuthProvider();
                 const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    try {
-                        await signInWithCustomToken(auth, __initial_auth_token);
-                    } catch(e) {
-                        console.warn("Token falhou, seguindo normal...");
+                // Função de autenticação compatível para evitar erro de domínio
+                const authenticate = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        return await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        return await signInAnonymously(auth);
                     }
-                }
-
-                getRedirectResult(auth).catch(err => console.error("Erro Redirect:", err));
+                };
 
                 window.fb = { 
-                    auth, db, appId, 
-                    onAuthStateChanged, 
+                    auth, db, appId, onAuthStateChanged, 
                     collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
-                    googleProvider, signInWithPopup, signInWithRedirect, signOut
+                    signOut, authenticate
                 };
                 window.dispatchEvent(new Event('firebase-ready'));
             } catch (e) {
-                console.error("Erro no Init Firebase:", e);
+                console.error("Erro Init:", e);
                 window.dispatchEvent(new Event('firebase-error'));
             }
         };
 
-        // Garante que tentamos inicializar logo que possível
-        if (document.readyState === 'complete') {
-            initFirebase();
-        } else {
-            window.addEventListener('load', initFirebase);
-        }
+        window.addEventListener('load', initFirebase);
+        if (document.readyState === 'complete') initFirebase();
     </script>
 
     <style>
@@ -110,11 +97,10 @@
             transition: all 0.2s ease;
         }
 
-        .btn-google {
-            background: white;
-            color: #1f2937;
-            border: 1px solid #e5e7eb;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        .btn-main {
+            background: #0f172a;
+            color: white;
+            box-shadow: 0 10px 20px rgba(15, 23, 42, 0.1);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -123,19 +109,19 @@
             transition: all 0.2s;
         }
 
-        .btn-google:hover { background-color: #f9fafb; border-color: #d1d5db; }
-        .btn-google:active { transform: scale(0.97); }
-        .btn-google:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .fade-in { animation: fadeIn 0.4s ease-out; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .btn-main:hover { transform: translateY(-2px); }
+        .btn-main:active { transform: scale(0.97); }
 
         .custom-select {
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
             background-repeat: no-repeat;
             background-position: right 1rem center;
             background-size: 1.25rem;
+            appearance: none;
         }
+
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
@@ -170,7 +156,6 @@
             const [fbReady, setFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
             const [loading, setLoading] = useState(true);
-            const [loginStatus, setLoginStatus] = useState(null);
             const [view, setView] = useState('home'); 
             const [bills, setBills] = useState([]);
             const [showModal, setShowModal] = useState(false);
@@ -178,103 +163,32 @@
             const chartInstance = useRef(null);
 
             useEffect(() => {
-                const handleReady = () => {
-                    console.log("Firebase está pronto.");
-                    setFbReady(true);
-                };
-                const handleError = () => {
-                    console.error("Firebase falhou ao inicializar.");
-                    setFbReady(false);
-                    setLoading(false);
-                    setLoginStatus("Erro crítico de inicialização.");
-                };
-
+                const handleReady = () => setFbReady(true);
                 window.addEventListener('firebase-ready', handleReady);
-                window.addEventListener('firebase-error', handleError);
-                
-                if (window.fb) handleReady();
-                
-                // Backup para parar o loading se nada acontecer
-                const timer = setTimeout(() => {
-                    if (loading) setLoading(false);
-                }, 3000);
-
-                return () => {
-                    window.removeEventListener('firebase-ready', handleReady);
-                    window.removeEventListener('firebase-error', handleError);
-                    clearTimeout(timer);
-                };
+                const timer = setInterval(() => { if (window.fb) { setFbReady(true); clearInterval(timer); } }, 500);
+                return () => { window.removeEventListener('firebase-ready', handleReady); clearInterval(timer); };
             }, []);
 
             useEffect(() => {
                 if (!fbReady || !window.fb) return;
-                
                 const { auth, onAuthStateChanged } = window.fb;
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     setUser(u);
                     setLoading(false);
                 });
-
                 return () => unsubscribe();
             }, [fbReady]);
 
             useEffect(() => {
                 if (!user || !fbReady || !window.fb) return;
                 const { db, appId, collection, onSnapshot } = window.fb;
-                
                 const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => {
-                    console.error("Erro no Firestore:", err);
-                });
-                
+                }, (err) => console.error(err));
                 return () => unsubscribe();
             }, [user, fbReady]);
-
-            const handleGoogleLogin = async (e) => {
-                // Previne qualquer comportamento default do browser
-                if (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
-
-                if (!window.fb) {
-                    setLoginStatus("Aguardando Firebase... Tente novamente em 2 segundos.");
-                    return;
-                }
-
-                const { auth, googleProvider, signInWithPopup, signInWithRedirect } = window.fb;
-                setLoginStatus("A abrir janela de login...");
-                
-                try { 
-                    // Em desktop tenta popup primeiro
-                    await signInWithPopup(auth, googleProvider);
-                    setLoginStatus(null);
-                } catch (e) { 
-                    console.warn("Popup bloqueado ou falhou, a tentar redirect...", e);
-                    try {
-                        setLoginStatus("A redirecionar...");
-                        await signInWithRedirect(auth, googleProvider);
-                    } catch (err2) {
-                        setLoginStatus("Erro ao autenticar. Verifique bloqueadores de pop-ups.");
-                        console.error("Erro Final de Login:", err2);
-                    }
-                }
-            };
-
-            const handleLogout = async () => {
-                if (!window.fb) return;
-                const { auth, signOut } = window.fb;
-                try {
-                    await signOut(auth);
-                    setUser(null);
-                    setView('home');
-                } catch (e) {
-                    console.error(e);
-                }
-            };
 
             const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
             const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
@@ -307,9 +221,8 @@
             }, [view, totalPendente, totalPago, bills.length]);
 
             if (loading) return (
-                <div className="min-h-screen flex flex-col items-center justify-center bg-white">
-                    <div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">A carregar interface...</p>
+                <div className="min-h-screen flex items-center justify-center bg-white">
+                    <div className="w-8 h-8 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin"></div>
                 </div>
             );
 
@@ -319,44 +232,25 @@
                         <AppLogo size={80} className="text-slate-900" />
                     </div>
                     <h1 className="text-3xl font-[900] text-slate-900 mb-2 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium leading-relaxed">Organize as suas despesas mensais sem complicações.</p>
-                    
-                    <div className="w-full max-w-xs space-y-4">
-                        <button 
-                            onClick={handleGoogleLogin} 
-                            disabled={!fbReady}
-                            className="w-full p-5 rounded-2xl font-bold btn-google group"
-                        >
-                            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5 group-active:scale-90 transition-transform" alt="Google" />
-                            <span>Entrar com Google</span>
-                        </button>
-
-                        {loginStatus && (
-                            <div className="p-3 bg-slate-50 rounded-xl text-[10px] font-bold text-slate-500 uppercase tracking-tight animate-pulse">
-                                {loginStatus}
-                            </div>
-                        )}
-                        
-                        {!fbReady && (
-                            <p className="text-[10px] text-rose-500 font-bold">Erro: Firebase não detetado.</p>
-                        )}
-                    </div>
-                    
-                    <div className="mt-20 opacity-20">
-                        <p className="text-[10px] font-black uppercase tracking-[0.2em]">Versão 2.6 Stable</p>
-                    </div>
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Controle as suas faturas de forma privada e segura.</p>
+                    <button onClick={() => window.fb.authenticate()} className="w-full max-w-xs p-5 rounded-2xl font-bold btn-main">
+                        <Icon name="log-in" size={20} />
+                        <span>Entrar na Aplicação</span>
+                    </button>
                 </div>
             );
 
             return (
-                <div className="min-h-screen pb-32 max-w-md mx-auto relative bg-[#fcfcfd] fade-in">
-                    <header className="px-6 pt-12 pb-6 flex justify-between items-center sticky top-0 bg-[#fcfcfd]/80 backdrop-blur-md z-40">
+                <div className="min-h-screen pb-32 max-w-md mx-auto bg-[#fcfcfd] fade-in">
+                    <header className="px-6 pt-12 pb-6 flex justify-between items-center">
                         <div>
-                            <h1 className="text-xl font-[900] text-slate-900 tracking-tight">Olá, {user.displayName?.split(' ')[0]}</h1>
-                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Painel Financeiro</p>
+                            <h1 className="text-xl font-[900] text-slate-900">Olá, Utilizador</h1>
+                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Painel de Controlo</p>
                         </div>
                         <button onClick={() => setView('profile')}>
-                            <img src={user.photoURL} className="w-10 h-10 rounded-xl shadow-lg border-2 border-white" alt="Perfil" />
+                            <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-900 border-2 border-white shadow-sm">
+                                <Icon name="user" size={18} />
+                            </div>
                         </button>
                     </header>
 
@@ -369,73 +263,64 @@
                                         <h2 className="text-4xl font-[900]">{totalPendente.toFixed(2)}</h2>
                                         <span className="text-xl font-bold text-slate-400">€</span>
                                     </div>
-                                    <div className="flex gap-4">
-                                        <div className="bg-white/10 px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider">
-                                            {bills.length} registos
-                                        </div>
+                                    <div className="inline-flex items-center gap-2 bg-white/10 px-3 py-1 rounded-full">
+                                        <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-pulse"></div>
+                                        <span className="text-[10px] font-bold uppercase tracking-wide">{bills.filter(b=>!b.paid).length} faturas abertas</span>
                                     </div>
                                 </div>
 
                                 <div className="space-y-4">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Contas a Pagar</h3>
-                                    {bills.filter(b => !b.paid).length === 0 ? (
-                                        <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-[2rem]">
-                                            <Icon name="check-circle" className="mx-auto text-slate-200 mb-2" size={32} />
-                                            <p className="text-slate-400 text-xs font-medium">Tudo em dia!</p>
-                                        </div>
-                                    ) : (
-                                        bills.filter(b => !b.paid).map(bill => (
-                                            <div key={bill.id} className="bill-card p-5 flex items-center justify-between">
-                                                <div className="flex items-center gap-4">
-                                                    <div className="w-12 h-12 bg-slate-50 text-indigo-600 rounded-xl flex items-center justify-center">
-                                                        <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={20} />
-                                                    </div>
-                                                    <div>
-                                                        <p className="font-bold text-slate-900">{bill.name}</p>
-                                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Limite: {bill.due}</p>
-                                                    </div>
+                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">A PAGAR</h3>
+                                    {bills.filter(b => !b.paid).map(bill => (
+                                        <div key={bill.id} className="bill-card p-5 flex items-center justify-between">
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-12 h-12 bg-slate-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                                                    <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={20} />
                                                 </div>
-                                                <div className="flex items-center gap-3">
-                                                    <p className="font-black text-slate-900">{Number(bill.value).toFixed(2)}€</p>
-                                                    <button onClick={async () => {
-                                                        const { db, appId, doc, updateDoc } = window.fb;
-                                                        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), { paid: true });
-                                                    }} className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-300 hover:text-emerald-500 transition-colors">
-                                                        <Icon name="check" size={16} />
-                                                    </button>
+                                                <div>
+                                                    <p className="font-bold text-sm text-slate-900">{bill.name}</p>
+                                                    <p className="text-[10px] font-bold text-slate-400 uppercase">Limite: {bill.due}</p>
                                                 </div>
                                             </div>
-                                        ))
-                                    )}
+                                            <div className="flex items-center gap-3">
+                                                <p className="font-black text-slate-900">{Number(bill.value).toFixed(2)}€</p>
+                                                <button onClick={async () => {
+                                                    const { db, appId, doc, updateDoc } = window.fb;
+                                                    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), { paid: true });
+                                                }} className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-300 hover:text-emerald-500">
+                                                    <Icon name="check" size={16} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
                                 </div>
                             </>
                         )}
 
                         {view === 'stats' && (
-                            <div className="bg-white p-6 rounded-[2rem] border border-slate-100">
-                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-6">Gráfico de Gastos</h3>
-                                <div className="h-[260px] w-full"><canvas ref={chartRef}></canvas></div>
+                            <div className="bg-white p-6 rounded-[2.5rem] border border-slate-100 fade-in">
+                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-8">Fluxo de Gastos</h3>
+                                <div className="h-[280px] w-full"><canvas ref={chartRef}></canvas></div>
                             </div>
                         )}
 
                         {view === 'list' && (
-                            <div className="space-y-4">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Histórico de Faturas</h3>
+                            <div className="space-y-4 fade-in">
+                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">HISTÓRICO</h3>
                                 {bills.map(bill => (
                                     <div key={bill.id} className={`bill-card p-4 flex items-center justify-between ${bill.paid ? 'opacity-50' : ''}`}>
                                         <div className="flex items-center gap-3">
-                                            <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} className="text-slate-400" />
-                                            <div>
-                                                <p className="font-bold text-sm">{bill.name}</p>
-                                                <p className="text-[10px] text-slate-400">{bill.paid ? 'Pago' : 'Pendente'}</p>
-                                            </div>
+                                            <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={18} className="text-slate-400" />
+                                            <p className="font-bold text-sm">{bill.name}</p>
                                         </div>
                                         <div className="flex items-center gap-4">
-                                            <span className="font-black text-sm">{bill.value}€</span>
+                                            <span className="font-black text-sm">{Number(bill.value).toFixed(2)}€</span>
                                             <button onClick={async () => {
                                                 const { db, appId, doc, deleteDoc } = window.fb;
                                                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
-                                            }} className="text-rose-200 hover:text-rose-500"><Icon name="trash-2" size={14}/></button>
+                                            }} className="text-rose-200 hover:text-rose-500 p-2">
+                                                <Icon name="trash-2" size={14}/>
+                                            </button>
                                         </div>
                                     </div>
                                 ))}
@@ -443,13 +328,12 @@
                         )}
 
                         {view === 'profile' && (
-                            <div className="text-center py-8 space-y-6">
-                                <img src={user.photoURL} className="w-24 h-24 rounded-[2rem] mx-auto border-4 border-white shadow-xl" alt="Foto" />
-                                <div>
-                                    <h2 className="text-xl font-black">{user.displayName}</h2>
-                                    <p className="text-xs text-slate-400">{user.email}</p>
+                            <div className="text-center py-8 space-y-6 fade-in">
+                                <div className="w-24 h-24 bg-slate-100 rounded-[2.5rem] mx-auto flex items-center justify-center text-slate-900 shadow-xl border-4 border-white">
+                                    <Icon name="user" size={40} />
                                 </div>
-                                <button onClick={handleLogout} className="w-full bg-rose-50 text-rose-600 p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-colors hover:bg-rose-100">
+                                <h2 className="text-xl font-black">Conta Privada</h2>
+                                <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-rose-50 text-rose-600 p-5 rounded-2xl font-bold flex items-center justify-center gap-2">
                                     <Icon name="log-out" size={18} /> Sair da Aplicação
                                 </button>
                             </div>
@@ -458,26 +342,26 @@
 
                     <div className="fixed bottom-6 left-0 right-0 flex justify-center px-6 z-50">
                         <nav className="w-full max-w-[320px] h-16 nav-glass rounded-full flex items-center justify-around shadow-xl border border-white/50">
-                            <button onClick={() => setView('home')} className={`p-3 rounded-full transition-colors ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
-                            <button onClick={() => setView('stats')} className={`p-3 rounded-full transition-colors ${view === 'stats' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
-                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd] active:scale-90 transition-transform shadow-lg"><Icon name="plus" /></button>
-                            <button onClick={() => setView('list')} className={`p-3 rounded-full transition-colors ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="list" /></button>
-                            <button onClick={() => setView('profile')} className={`p-3 rounded-full transition-colors ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="user" /></button>
+                            <button onClick={() => setView('home')} className={`p-3 rounded-full ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
+                            <button onClick={() => setView('stats')} className={`p-3 rounded-full ${view === 'stats' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
+                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd] active:scale-90 transition-transform"><Icon name="plus" /></button>
+                            <button onClick={() => setView('list')} className={`p-3 rounded-full ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="list" /></button>
+                            <button onClick={() => setView('profile')} className={`p-3 rounded-full ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="user" /></button>
                         </nav>
                     </div>
 
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-end">
-                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[2.5rem] p-8 fade-in">
+                            <div className="bg-white w-full rounded-t-[2.5rem] p-8 animate-in slide-in-from-bottom duration-300">
                                 <div className="flex justify-between items-center mb-6">
-                                    <h2 className="font-black text-lg">Nova Despesa</h2>
+                                    <h2 className="font-black text-lg">Nova Fatura</h2>
                                     <button onClick={() => setShowModal(false)}><Icon name="x" className="text-slate-300" /></button>
                                 </div>
                                 <form onSubmit={async (e) => {
                                     e.preventDefault();
                                     const { db, appId, doc, setDoc } = window.fb;
                                     const f = new FormData(e.target);
-                                    const id = Date.now().toString();
+                                    const id = "bill_" + Date.now();
                                     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), {
                                         name: f.get('name'),
                                         value: f.get('value'),
@@ -488,7 +372,7 @@
                                     });
                                     setShowModal(false);
                                 }} className="space-y-4">
-                                    <input name="name" placeholder="Nome do Serviço" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none" required />
+                                    <input name="name" placeholder="Descrição" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none" required />
                                     <select name="category" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-500 custom-select border-none">
                                         {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                                     </select>
@@ -496,7 +380,7 @@
                                         <input name="value" type="number" step="0.01" placeholder="Valor (€)" className="p-4 bg-slate-50 rounded-xl font-bold border-none" required />
                                         <input name="date" type="date" className="p-4 bg-slate-50 rounded-xl font-bold text-xs border-none" required />
                                     </div>
-                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100 active:scale-95 transition-transform mt-4">Gravar Fatura</button>
+                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100 mt-4">Registar Agora</button>
                                 </form>
                             </div>
                         </div>

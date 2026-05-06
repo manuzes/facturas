@@ -16,7 +16,18 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getAuth, 
+            onAuthStateChanged, 
+            signInWithCustomToken, 
+            GoogleAuthProvider, 
+            signInWithPopup, 
+            signInWithRedirect,
+            getRedirectResult,
+            signOut, 
+            setPersistence, 
+            browserLocalPersistence 
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         const initFirebase = async () => {
@@ -24,20 +35,31 @@
                 const firebaseConfig = JSON.parse(__firebase_config);
                 const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
+                
+                // Configurar persistência local para manter o login
+                await setPersistence(auth, browserLocalPersistence);
+                
                 const db = getFirestore(app);
                 const googleProvider = new GoogleAuthProvider();
                 const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-                // Tenta autenticar com token customizado se existir, caso contrário anónimo (requisito do sistema)
+                // Tenta autenticar com token customizado do ambiente se disponível
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
+                    try {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } catch(e) {
+                        console.warn("Custom token failed, falling back...");
+                    }
                 }
+
+                // Verificar se há um resultado de redirecionamento (vinda do login Google)
+                getRedirectResult(auth).catch(err => console.error("Redirect Result Error:", err));
 
                 window.fb = { 
                     auth, db, appId, 
                     onAuthStateChanged, 
                     collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
-                    googleProvider, signInWithPopup, signOut
+                    googleProvider, signInWithPopup, signInWithRedirect, signOut
                 };
                 window.dispatchEvent(new Event('firebase-ready'));
             } catch (e) {
@@ -148,9 +170,7 @@
             const chartInstance = useRef(null);
 
             useEffect(() => {
-                const handleReady = () => {
-                    setFbReady(true);
-                };
+                const handleReady = () => setFbReady(true);
                 const handleError = () => {
                     setFbReady(false);
                     setLoading(false);
@@ -160,9 +180,7 @@
                 
                 if (window.fb) handleReady();
                 
-                // Timeout para não ficar preso no loading
                 const timer = setTimeout(() => setLoading(false), 2000);
-
                 return () => {
                     window.removeEventListener('firebase-ready', handleReady);
                     window.removeEventListener('firebase-error', handleError);
@@ -199,13 +217,20 @@
 
             const handleGoogleLogin = async () => {
                 if (!window.fb) return;
-                const { auth, googleProvider, signInWithPopup } = window.fb;
+                const { auth, googleProvider, signInWithPopup, signInWithRedirect } = window.fb;
                 setLoginError(null);
+                
                 try { 
+                    // Tentativa primária com Popup
                     await signInWithPopup(auth, googleProvider);
                 } catch (e) { 
-                    console.error("Login error:", e);
-                    setLoginError("Não foi possível abrir a janela de login.");
+                    console.warn("Popup blocked or failed, trying redirect...", e);
+                    try {
+                        // Fallback para Redirecionamento (melhor para browsers móveis/bloqueados)
+                        await signInWithRedirect(auth, googleProvider);
+                    } catch (err2) {
+                        setLoginError("Erro ao autenticar. Verifique as definições do browser.");
+                    }
                 }
             };
 
@@ -266,8 +291,14 @@
                     <h1 className="text-3xl font-[900] text-slate-900 mb-2 tracking-tighter">Facturas Pro</h1>
                     <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium leading-relaxed">Controle as suas faturas mensais de forma profissional.</p>
                     
-                    <button onClick={handleGoogleLogin} className="w-full max-w-xs p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
-                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" />
+                    <button 
+                        onClick={(e) => {
+                            e.preventDefault();
+                            handleGoogleLogin();
+                        }} 
+                        className="w-full max-w-xs p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google"
+                    >
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" alt="Google" />
                         Entrar com Google
                     </button>
 
@@ -287,7 +318,7 @@
                             <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Gestão de Faturas</p>
                         </div>
                         <button onClick={() => setView('profile')}>
-                            <img src={user.photoURL} className="w-10 h-10 rounded-xl shadow-lg border-2 border-white" />
+                            <img src={user.photoURL} className="w-10 h-10 rounded-xl shadow-lg border-2 border-white" alt="Perfil" />
                         </button>
                     </header>
 
@@ -364,10 +395,8 @@
                                         <div className="flex items-center gap-4">
                                             <span className="font-black text-sm">{bill.value}€</span>
                                             <button onClick={async () => {
-                                                if(confirm('Apagar registo?')) {
-                                                    const { db, appId, doc, deleteDoc } = window.fb;
-                                                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
-                                                }
+                                                const { db, appId, doc, deleteDoc } = window.fb;
+                                                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
                                             }} className="text-rose-200 hover:text-rose-500"><Icon name="trash-2" size={14}/></button>
                                         </div>
                                     </div>
@@ -377,7 +406,7 @@
 
                         {view === 'profile' && (
                             <div className="text-center py-8 space-y-6">
-                                <img src={user.photoURL} className="w-24 h-24 rounded-[2rem] mx-auto border-4 border-white shadow-xl" />
+                                <img src={user.photoURL} className="w-24 h-24 rounded-[2rem] mx-auto border-4 border-white shadow-xl" alt="Foto" />
                                 <div>
                                     <h2 className="text-xl font-black">{user.displayName}</h2>
                                     <p className="text-xs text-slate-400">{user.email}</p>

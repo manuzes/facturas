@@ -20,14 +20,12 @@
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         const firebaseConfig = JSON.parse(__firebase_config);
-
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const googleProvider = new GoogleAuthProvider();
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-        // Exportar para o scope global de forma segura
         window.fb = { 
             auth, db, appId, 
             signInWithCustomToken, signInAnonymously, onAuthStateChanged, 
@@ -35,7 +33,6 @@
             googleProvider, signInWithPopup, signOut
         };
 
-        // Evento customizado para avisar o React que o Firebase está pronto
         window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
@@ -132,11 +129,6 @@
             background-position: right 1rem center;
             background-size: 1.25rem;
         }
-
-        /* Avatar Fallback */
-        .avatar-shadow {
-            box-shadow: 0 8px 16px rgba(79, 70, 229, 0.2);
-        }
     </style>
 </head>
 <body>
@@ -168,34 +160,69 @@
         };
 
         function App() {
+            const [fbReady, setFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
             const [loading, setLoading] = useState(true);
             const [view, setView] = useState('home'); 
-            const [bills, setBills] = useState(JSON.parse(localStorage.getItem('mcp_bills')) || []);
+            const [bills, setBills] = useState([]);
             const [showModal, setShowModal] = useState(false);
             
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
 
-            // Inicialização do Firebase Auth (Mockado se as vars não existirem, real se existirem)
             useEffect(() => {
-                const checkAuth = () => {
-                    const savedUser = localStorage.getItem('mcp_user');
-                    if (savedUser) setUser(JSON.parse(savedUser));
-                    setLoading(false);
-                };
-                checkAuth();
+                const handleReady = () => setFbReady(true);
+                window.addEventListener('firebase-ready', handleReady);
+                return () => window.removeEventListener('firebase-ready', handleReady);
             }, []);
 
             useEffect(() => {
-                localStorage.setItem('mcp_bills', JSON.stringify(bills));
-            }, [bills]);
+                if (!fbReady) return;
+                const { auth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } = window.fb;
+                
+                const initAuth = async () => {
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            // Não forçamos o anónimo se quisermos que o Google seja o principal
+                            // mas o Firebase exige um estado inicial para carregar dados se definidos assim.
+                            await signInAnonymously(auth);
+                        }
+                    } catch (err) { console.error("Erro Auth:", err); }
+                };
 
-            const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + b.value, 0), [bills]);
-            const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + b.value, 0), [bills]);
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    // Validamos se o utilizador tem nome (vindo do Google) ou se é anónimo
+                    if (u && (!u.isAnonymous || u.displayName)) {
+                        setUser(u);
+                    } else {
+                        setUser(null);
+                    }
+                    setLoading(false);
+                });
+                return () => unsubscribe();
+            }, [fbReady]);
 
             useEffect(() => {
-                if (view === 'stats' && chartRef.current && user) {
+                if (!user || !fbReady) return;
+                const { db, appId, collection, onSnapshot } = window.fb;
+                const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
+                
+                const unsubscribe = onSnapshot(colRef, (snap) => {
+                    const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+                }, (err) => console.error("Erro Firestore:", err));
+                
+                return () => unsubscribe();
+            }, [user, fbReady]);
+
+            const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
+            const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
+
+            useEffect(() => {
+                if (view === 'stats' && chartRef.current && bills.length > 0) {
                     if (chartInstance.current) chartInstance.current.destroy();
                     const ctx = chartRef.current.getContext('2d');
                     const gradient = ctx.createLinearGradient(0, 0, 0, 250);
@@ -205,10 +232,10 @@
                     chartInstance.current = new Chart(ctx, {
                         type: 'line',
                         data: {
-                            labels: ['Semana 1', 'Semana 2', 'Semana 3', 'Semana 4'],
+                            labels: ['Anterior', 'Atual'],
                             datasets: [{
                                 label: 'Gastos',
-                                data: bills.length > 0 ? [totalPago * 0.2, totalPago * 0.5, totalPago, totalPendente + totalPago] : [0,0,0,0],
+                                data: [totalPago * 0.8, totalPago + totalPendente],
                                 borderColor: '#4f46e5',
                                 borderWidth: 4,
                                 tension: 0.45,
@@ -225,62 +252,64 @@
                         }
                     });
                 }
-            }, [view, bills, user]);
+            }, [view, totalPendente, totalPago, bills.length]);
 
             const handleGoogleLogin = async () => {
-                // Se estiveres num ambiente real com Firebase configurado:
-                // const provider = new window.firebaseUtils.GoogleAuthProvider();
-                // const auth = window.firebaseUtils.getAuth();
-                // const result = await window.firebaseUtils.signInWithPopup(auth, provider);
-                // const user = result.user;
-                
-                // Simulação de login que captura os campos reais que o Google devolve:
-                const mockUser = {
-                    name: "Utilizador Pro",
-                    email: "pro@facturas.com",
-                    // A imagem abaixo seria result.user.photoURL
-                    photo: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=128&h=128&fit=crop"
-                };
-                setUser(mockUser);
-                localStorage.setItem('mcp_user', JSON.stringify(mockUser));
+                const { auth, googleProvider, signInWithPopup } = window.fb;
+                try { 
+                    const result = await signInWithPopup(auth, googleProvider);
+                    setUser(result.user);
+                } catch (e) { 
+                    console.error("Erro Google Login:", e); 
+                }
             };
 
-            const handleLogout = () => {
+            const handleLogout = async () => {
+                const { auth, signOut } = window.fb;
+                await signOut(auth);
                 setUser(null);
-                localStorage.removeItem('mcp_user');
-                setView('home');
             };
 
-            const getCategoryIcon = (catId) => {
-                const cat = CATEGORIES.find(c => c.id === catId);
-                return cat ? cat.icon : 'receipt';
+            const togglePaid = async (bill) => {
+                if (!user || !fbReady) return;
+                const { db, appId, doc, updateDoc } = window.fb;
+                try {
+                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
+                    await updateDoc(docRef, { paid: !bill.paid });
+                } catch (e) { console.error(e); }
             };
 
-            if (loading) return null;
+            const deleteBill = async (id) => {
+                if (!confirm("Eliminar esta fatura?")) return;
+                const { db, appId, doc, deleteDoc } = window.fb;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id));
+                } catch (e) { console.error(e); }
+            };
 
-            if (!user) {
-                return (
-                    <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
-                        <div className="mb-10 p-8 bg-slate-50 rounded-[3.5rem]">
-                            <AppLogo size={100} className="text-slate-900" />
-                        </div>
-                        <h1 className="text-3xl font-[900] text-slate-900 mb-4 tracking-tighter">Facturas Pro</h1>
-                        <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira profissional com design minimalista.</p>
-                        <button onClick={handleGoogleLogin} className="w-full max-w-xs flex items-center justify-center gap-4 p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
-                            <svg className="w-5 h-5" viewBox="0 0 24 24">
-                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
-                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-                            </svg>
-                            Entrar com o Google
-                        </button>
+            if (loading || !fbReady) return (
+                <div className="min-h-screen flex items-center justify-center bg-white">
+                    <div className="w-10 h-10 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div>
+                </div>
+            );
+
+            // Interface de Login se não houver utilizador autenticado via Google
+            if (!user) return (
+                <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 text-center fade-in">
+                    <div className="mb-10 p-8 bg-slate-50 rounded-[3.5rem]">
+                        <AppLogo size={100} className="text-slate-900" />
                     </div>
-                );
-            }
+                    <h1 className="text-3xl font-[900] text-slate-900 mb-4 tracking-tighter">Facturas Pro</h1>
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira profissional com design minimalista.</p>
+                    <button onClick={handleGoogleLogin} className="w-full max-w-xs flex items-center justify-center gap-4 p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
+                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" />
+                        Entrar com o Google
+                    </button>
+                </div>
+            );
 
             return (
-                <div className="min-h-screen pb-32 max-w-md mx-auto relative overflow-x-hidden fade-in bg-[#fcfcfd]">
+                <div className="min-h-screen pb-32 max-w-md mx-auto relative bg-[#fcfcfd] fade-in">
                     <header className="px-6 pt-12 pb-6 flex justify-between items-start sticky top-0 bg-[#fcfcfd]/90 backdrop-blur-xl z-40">
                         <div>
                             <h1 className="text-2xl font-[900] text-slate-900 tracking-tight">Painel Principal</h1>
@@ -289,11 +318,11 @@
                                 Versão Pro Ativa
                             </p>
                         </div>
-                        <button onClick={() => setView('profile')} className="relative">
+                        <button onClick={() => setView('profile')}>
                             <img 
-                                src={user.photo} 
-                                onError={(e) => {e.target.src = `https://ui-avatars.com/api/?name=${user.name}&background=4f46e5&color=fff`}}
+                                src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}&background=4f46e5&color=fff`} 
                                 className="w-12 h-12 rounded-2xl border-2 border-white shadow-xl active:scale-90 transition-transform object-cover" 
+                                alt="Perfil"
                             />
                         </button>
                     </header>
@@ -322,10 +351,10 @@
                                             </div>
                                         ) : (
                                             bills.filter(b => !b.paid).map(bill => (
-                                                <div key={bill.id} className="bill-card p-5 flex items-center justify-between animate-in fade-in relative">
+                                                <div key={bill.id} className="bill-card p-5 flex items-center justify-between relative fade-in">
                                                     <div className="flex items-center gap-5">
                                                         <div className="w-14 h-14 bg-slate-50 text-indigo-500 rounded-2xl flex items-center justify-center">
-                                                            <Icon name={getCategoryIcon(bill.category)} size={24} />
+                                                            <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={24} />
                                                         </div>
                                                         <div>
                                                             <div className="flex items-center gap-2">
@@ -335,7 +364,12 @@
                                                             <p className="text-[10px] font-bold mt-1 text-slate-400 uppercase">Vence a {bill.due}</p>
                                                         </div>
                                                     </div>
-                                                    <p className="font-[900] text-slate-900 text-lg">{bill.value.toFixed(2)}€</p>
+                                                    <div className="flex items-center gap-3">
+                                                        <p className="font-[900] text-slate-900 text-lg">{bill.value?.toFixed(2)}€</p>
+                                                        <button onClick={() => togglePaid(bill)} className="w-10 h-10 bg-slate-50 rounded-xl flex items-center justify-center text-slate-200">
+                                                            <Icon name="check" size={20} />
+                                                        </button>
+                                                    </div>
                                                 </div>
                                             ))
                                         )}
@@ -345,7 +379,7 @@
                         )}
 
                         {view === 'stats' && (
-                            <div className="space-y-6 animate-in fade-in">
+                            <div className="space-y-6 fade-in">
                                 <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm text-center">
                                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">Tendência Mensal</h3>
                                     <div className="chart-container">
@@ -356,19 +390,18 @@
                         )}
 
                         {view === 'list' && (
-                            <div className="space-y-4 animate-in fade-in">
+                            <div className="space-y-4 fade-in">
                                 <div className="flex justify-between items-center">
                                     <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em]">Histórico Geral</h3>
-                                    <button onClick={() => setBills([])} className="text-[10px] font-bold text-rose-500 uppercase tracking-wider">Limpar Tudo</button>
                                 </div>
                                 {bills.length === 0 ? (
-                                    <p className="text-center py-10 text-slate-300 font-bold">Ainda não adicionaste faturas.</p>
+                                    <p className="text-center py-10 text-slate-300 font-bold italic">Ainda não adicionaste faturas.</p>
                                 ) : (
                                     bills.map(bill => (
                                         <div key={bill.id} className={`bill-card p-5 flex items-center justify-between ${bill.paid ? 'opacity-40' : ''}`}>
                                             <div className="flex items-center gap-4">
                                                 <div className="w-12 h-12 bg-slate-50 rounded-xl flex items-center justify-center text-slate-400">
-                                                    <Icon name={getCategoryIcon(bill.category)} size={20} />
+                                                    <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={20} />
                                                 </div>
                                                 <div>
                                                     <p className="font-bold">{bill.name}</p>
@@ -376,10 +409,10 @@
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-2">
-                                                {bill.alarm && !bill.paid && <Icon name="bell" size={16} className="text-amber-500 mr-1 animate-bounce" />}
-                                                <button onClick={() => setBills(bills.map(b => b.id === bill.id ? {...b, paid: !b.paid} : b))} className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center transition-all ${bill.paid ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-100 text-slate-200'}`}>
+                                                <button onClick={() => togglePaid(bill)} className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center transition-all ${bill.paid ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-100 text-slate-200'}`}>
                                                     <Icon name="check" size={18} />
                                                 </button>
+                                                <button onClick={() => deleteBill(bill.id)} className="w-9 h-9 text-rose-200"><Icon name="trash-2" size={16} /></button>
                                             </div>
                                         </div>
                                     ))
@@ -388,19 +421,16 @@
                         )}
 
                         {view === 'profile' && (
-                            <div className="space-y-8 py-4 animate-in fade-in text-center">
+                            <div className="space-y-8 py-4 fade-in text-center">
                                 <div className="relative inline-block">
                                     <img 
-                                        src={user.photo} 
-                                        onError={(e) => {e.target.src = `https://ui-avatars.com/api/?name=${user.name}&background=4f46e5&color=fff`}}
+                                        src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}&background=4f46e5&color=fff`} 
                                         className="w-32 h-32 rounded-[3rem] border-4 border-white shadow-2xl mx-auto object-cover" 
+                                        alt="Avatar"
                                     />
-                                    <div className="absolute -bottom-2 -right-2 bg-indigo-600 text-white p-2 rounded-xl shadow-lg">
-                                        <Icon name="camera" size={16} />
-                                    </div>
                                 </div>
                                 <div>
-                                    <h2 className="text-2xl font-black text-slate-900">{user.name}</h2>
+                                    <h2 className="text-2xl font-black text-slate-900">{user.displayName}</h2>
                                     <p className="text-sm text-slate-400 font-medium">{user.email}</p>
                                 </div>
                                 <button onClick={handleLogout} className="w-full bg-rose-50 p-5 rounded-3xl text-rose-600 font-bold active:scale-95 transition-transform">Sair da Conta Google</button>
@@ -412,7 +442,7 @@
                         <nav className="w-full max-w-[340px] h-20 nav-glass rounded-[2.5rem] flex items-center justify-around px-2 shadow-2xl border border-white/20">
                             <button onClick={() => setView('home')} className={`p-4 rounded-2xl ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="layout-grid" size={24} /></button>
                             <button onClick={() => setView('stats')} className={`p-4 rounded-2xl ${view === 'stats' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="bar-chart-3" size={24} /></button>
-                            <button onClick={() => setShowModal(true)} className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-xl -mt-10 border-4 border-[#fcfcfd]"><Icon name="plus" size={26}/></button>
+                            <button onClick={() => setShowModal(true)} className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-xl -mt-10 border-4 border-[#fcfcfd] active:scale-90 transition-transform"><Icon name="plus" size={26}/></button>
                             <button onClick={() => setView('list')} className={`p-4 rounded-2xl ${view === 'list' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="receipt" size={24} /></button>
                             <button onClick={() => setView('profile')} className={`p-4 rounded-2xl ${view === 'profile' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="user" size={24} /></button>
                         </nav>
@@ -420,45 +450,37 @@
 
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-end">
-                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[3rem] p-8 animate-in slide-in-from-bottom-10 overflow-y-auto max-h-[90vh]">
+                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[3rem] p-8 fade-in overflow-y-auto max-h-[90vh]">
                                 <div className="flex justify-between items-center mb-6">
                                     <h2 className="text-xl font-black">Nova Fatura</h2>
                                     <button onClick={() => setShowModal(false)} className="p-2 bg-slate-50 rounded-full text-slate-400"><Icon name="x" size={20}/></button>
                                 </div>
-                                
-                                <form onSubmit={(e) => {
+                                <form onSubmit={async (e) => {
                                     e.preventDefault();
+                                    const { db, appId, doc, setDoc } = window.fb;
                                     const f = new FormData(e.target);
-                                    setBills([{
-                                        id: Date.now(),
+                                    const id = Date.now().toString();
+                                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), {
                                         name: f.get('name'),
                                         value: parseFloat(f.get('value')),
                                         due: f.get('date'),
                                         category: f.get('category'),
                                         alarm: f.get('alarm') === 'on',
-                                        paid: false
-                                    }, ...bills]);
+                                        paid: false,
+                                        createdAt: Date.now()
+                                    });
                                     setShowModal(false);
                                 }} className="space-y-5">
-                                    
                                     <div>
                                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Nome do Serviço</p>
                                         <input name="name" placeholder="Ex: MEO, EDP..." className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold" required />
                                     </div>
-
                                     <div>
                                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Categoria</p>
-                                        <select 
-                                            name="category" 
-                                            className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold text-slate-700 custom-select" 
-                                            required
-                                        >
-                                            {CATEGORIES.map(cat => (
-                                                <option key={cat.id} value={cat.id}>{cat.label}</option>
-                                            ))}
+                                        <select name="category" className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold text-slate-700 custom-select" required>
+                                            {CATEGORIES.map(cat => <option key={cat.id} value={cat.id}>{cat.label}</option>)}
                                         </select>
                                     </div>
-
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Valor</p>
@@ -469,7 +491,6 @@
                                             <input name="date" type="date" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-xs" required />
                                         </div>
                                     </div>
-
                                     <div className="flex items-center justify-between p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100">
                                         <div className="flex items-center gap-3">
                                             <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600">
@@ -485,7 +506,6 @@
                                             <span className="slider"></span>
                                         </label>
                                     </div>
-
                                     <button type="submit" className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black uppercase shadow-xl mt-2 active:scale-95 transition-transform">Adicionar Fatura</button>
                                 </form>
                             </div>

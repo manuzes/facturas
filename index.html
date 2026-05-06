@@ -16,7 +16,7 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         const firebaseConfig = JSON.parse(__firebase_config);
@@ -26,9 +26,12 @@
         const googleProvider = new GoogleAuthProvider();
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
+        // Configurar persistência local para manter o login após refresh
+        setPersistence(auth, browserLocalPersistence);
+
         window.fb = { 
             auth, db, appId, 
-            signInWithCustomToken, signInAnonymously, onAuthStateChanged, 
+            signInWithCustomToken, onAuthStateChanged, 
             collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
             googleProvider, signInWithPopup, signOut
         };
@@ -49,13 +52,6 @@
             overscroll-behavior-y: none;
             user-select: none;
             -webkit-user-select: none;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        input, select, textarea {
-            user-select: auto;
-            -webkit-user-select: auto;
-            appearance: none;
         }
 
         .dark-card {
@@ -68,7 +64,7 @@
             background: rgba(255, 255, 255, 0.8);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            border-top: 1px solid rgba(0, 0, 0, 0.05);
         }
 
         .bill-card {
@@ -90,7 +86,7 @@
 
         .chart-container { position: relative; height: 260px; width: 100%; }
 
-        .fade-in { animation: fadeIn 0.5s ease-out; }
+        .fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
         .switch {
@@ -178,24 +174,22 @@
 
             useEffect(() => {
                 if (!fbReady) return;
-                const { auth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } = window.fb;
+                const { auth, onAuthStateChanged, signInWithCustomToken } = window.fb;
                 
                 const initAuth = async () => {
                     try {
                         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             await signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            // Não forçamos o anónimo se quisermos que o Google seja o principal
-                            // mas o Firebase exige um estado inicial para carregar dados se definidos assim.
-                            await signInAnonymously(auth);
                         }
-                    } catch (err) { console.error("Erro Auth:", err); }
+                        // Nota: Removemos o signInAnonymously para forçar o login Google
+                    } catch (err) { console.error("Erro Auth Init:", err); }
                 };
 
                 initAuth();
+                
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
-                    // Validamos se o utilizador tem nome (vindo do Google) ou se é anónimo
-                    if (u && (!u.isAnonymous || u.displayName)) {
+                    // Só aceitamos o utilizador se ele não for anónimo (ou seja, se tiver display name/email do Google)
+                    if (u && !u.isAnonymous) {
                         setUser(u);
                     } else {
                         setUser(null);
@@ -208,12 +202,14 @@
             useEffect(() => {
                 if (!user || !fbReady) return;
                 const { db, appId, collection, onSnapshot } = window.fb;
-                const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
                 
+                const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => console.error("Erro Firestore:", err));
+                }, (err) => {
+                    console.error("Erro Firestore:", err);
+                });
                 
                 return () => unsubscribe();
             }, [user, fbReady]);
@@ -257,10 +253,12 @@
             const handleGoogleLogin = async () => {
                 const { auth, googleProvider, signInWithPopup } = window.fb;
                 try { 
+                    setLoading(true);
                     const result = await signInWithPopup(auth, googleProvider);
-                    setUser(result.user);
+                    // O onAuthStateChanged tratará do setUser
                 } catch (e) { 
                     console.error("Erro Google Login:", e); 
+                    setLoading(false);
                 }
             };
 
@@ -268,6 +266,7 @@
                 const { auth, signOut } = window.fb;
                 await signOut(auth);
                 setUser(null);
+                setView('home');
             };
 
             const togglePaid = async (bill) => {
@@ -280,7 +279,6 @@
             };
 
             const deleteBill = async (id) => {
-                if (!confirm("Eliminar esta fatura?")) return;
                 const { db, appId, doc, deleteDoc } = window.fb;
                 try {
                     await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id));
@@ -293,18 +291,18 @@
                 </div>
             );
 
-            // Interface de Login se não houver utilizador autenticado via Google
             if (!user) return (
                 <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 text-center fade-in">
                     <div className="mb-10 p-8 bg-slate-50 rounded-[3.5rem]">
                         <AppLogo size={100} className="text-slate-900" />
                     </div>
                     <h1 className="text-3xl font-[900] text-slate-900 mb-4 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira profissional com design minimalista.</p>
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium italic">Inicia sessão para gerir as tuas finanças com total segurança.</p>
                     <button onClick={handleGoogleLogin} className="w-full max-w-xs flex items-center justify-center gap-4 p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
                         <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" />
-                        Entrar com o Google
+                        Entrar com Google
                     </button>
+                    <p className="mt-8 text-[10px] text-slate-300 uppercase font-bold tracking-widest">Acesso Restrito a Utilizadores Autorizados</p>
                 </div>
             );
 
@@ -312,17 +310,19 @@
                 <div className="min-h-screen pb-32 max-w-md mx-auto relative bg-[#fcfcfd] fade-in">
                     <header className="px-6 pt-12 pb-6 flex justify-between items-start sticky top-0 bg-[#fcfcfd]/90 backdrop-blur-xl z-40">
                         <div>
-                            <h1 className="text-2xl font-[900] text-slate-900 tracking-tight">Painel Principal</h1>
+                            <h1 className="text-2xl font-[900] text-slate-900 tracking-tight">
+                                Olá, {user.displayName?.split(' ')[0]}
+                            </h1>
                             <p className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.2em] mt-2 flex items-center gap-1">
-                                <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-pulse"></span>
-                                Versão Pro Ativa
+                                <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full"></span>
+                                Sincronizado
                             </p>
                         </div>
                         <button onClick={() => setView('profile')}>
                             <img 
                                 src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}&background=4f46e5&color=fff`} 
                                 className="w-12 h-12 rounded-2xl border-2 border-white shadow-xl active:scale-90 transition-transform object-cover" 
-                                alt="Perfil"
+                                alt="Foto de Perfil"
                             />
                         </button>
                     </header>
@@ -331,14 +331,14 @@
                         {view === 'home' && (
                             <>
                                 <div className="dark-card p-8 text-white relative overflow-hidden">
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 opacity-70">Total Pendente</p>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 opacity-70">Pendente este mês</p>
                                     <div className="flex items-baseline gap-1 mb-8">
                                         <h2 className="text-5xl font-[900] tracking-tighter">{totalPendente.toFixed(2).replace('.', ',')}</h2>
                                         <span className="text-2xl font-bold text-slate-400">€</span>
                                     </div>
                                     <div className="bg-white/10 px-4 py-2 rounded-full border border-white/10 inline-flex items-center gap-2">
                                         <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full"></div>
-                                        <span className="text-[9px] font-black uppercase tracking-wider">{bills.filter(b=>b.paid).length} Faturas Pagas</span>
+                                        <span className="text-[9px] font-black uppercase tracking-wider">{bills.filter(b=>b.paid).length} Liquidadas</span>
                                     </div>
                                 </div>
 
@@ -347,7 +347,7 @@
                                     <div className="space-y-4">
                                         {bills.filter(b => !b.paid).length === 0 ? (
                                             <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-[2.5rem] text-slate-300 font-bold text-sm italic">
-                                                Nenhuma fatura pendente.
+                                                Tudo em dia por agora.
                                             </div>
                                         ) : (
                                             bills.filter(b => !b.paid).map(bill => (
@@ -359,14 +359,13 @@
                                                         <div>
                                                             <div className="flex items-center gap-2">
                                                                 <p className="font-extrabold text-slate-900">{bill.name}</p>
-                                                                {bill.alarm && <Icon name="bell" size={12} className="text-amber-500" />}
                                                             </div>
                                                             <p className="text-[10px] font-bold mt-1 text-slate-400 uppercase">Vence a {bill.due}</p>
                                                         </div>
                                                     </div>
                                                     <div className="flex items-center gap-3">
-                                                        <p className="font-[900] text-slate-900 text-lg">{bill.value?.toFixed(2)}€</p>
-                                                        <button onClick={() => togglePaid(bill)} className="w-10 h-10 bg-slate-50 rounded-xl flex items-center justify-center text-slate-200">
+                                                        <p className="font-[900] text-slate-900 text-lg">{Number(bill.value).toFixed(2)}€</p>
+                                                        <button onClick={() => togglePaid(bill)} className="w-10 h-10 bg-slate-50 rounded-xl flex items-center justify-center text-slate-200 hover:text-emerald-500 transition-colors">
                                                             <Icon name="check" size={20} />
                                                         </button>
                                                     </div>
@@ -381,7 +380,7 @@
                         {view === 'stats' && (
                             <div className="space-y-6 fade-in">
                                 <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm text-center">
-                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">Tendência Mensal</h3>
+                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">Tendência de Gastos</h3>
                                     <div className="chart-container">
                                         <canvas ref={chartRef}></canvas>
                                     </div>
@@ -395,7 +394,7 @@
                                     <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em]">Histórico Geral</h3>
                                 </div>
                                 {bills.length === 0 ? (
-                                    <p className="text-center py-10 text-slate-300 font-bold italic">Ainda não adicionaste faturas.</p>
+                                    <p className="text-center py-10 text-slate-300 font-bold italic">Sem faturas registadas.</p>
                                 ) : (
                                     bills.map(bill => (
                                         <div key={bill.id} className={`bill-card p-5 flex items-center justify-between ${bill.paid ? 'opacity-40' : ''}`}>
@@ -412,7 +411,7 @@
                                                 <button onClick={() => togglePaid(bill)} className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center transition-all ${bill.paid ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-100 text-slate-200'}`}>
                                                     <Icon name="check" size={18} />
                                                 </button>
-                                                <button onClick={() => deleteBill(bill.id)} className="w-9 h-9 text-rose-200"><Icon name="trash-2" size={16} /></button>
+                                                <button onClick={() => deleteBill(bill.id)} className="w-9 h-9 text-rose-200 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={16} /></button>
                                             </div>
                                         </div>
                                     ))
@@ -426,25 +425,41 @@
                                     <img 
                                         src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}&background=4f46e5&color=fff`} 
                                         className="w-32 h-32 rounded-[3rem] border-4 border-white shadow-2xl mx-auto object-cover" 
-                                        alt="Avatar"
+                                        alt="Avatar Google"
                                     />
+                                    <div className="absolute -bottom-2 -right-2 bg-indigo-600 text-white p-2 rounded-xl border-4 border-white shadow-lg">
+                                        <Icon name="check" size={16} />
+                                    </div>
                                 </div>
                                 <div>
                                     <h2 className="text-2xl font-black text-slate-900">{user.displayName}</h2>
                                     <p className="text-sm text-slate-400 font-medium">{user.email}</p>
                                 </div>
-                                <button onClick={handleLogout} className="w-full bg-rose-50 p-5 rounded-3xl text-rose-600 font-bold active:scale-95 transition-transform">Sair da Conta Google</button>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="bg-slate-50 p-4 rounded-2xl text-center">
+                                        <p className="text-[10px] text-slate-400 font-black uppercase mb-1">Membro desde</p>
+                                        <p className="font-bold text-slate-900 text-xs">Maio 2024</p>
+                                    </div>
+                                    <div className="bg-slate-50 p-4 rounded-2xl text-center">
+                                        <p className="text-[10px] text-slate-400 font-black uppercase mb-1">Faturas</p>
+                                        <p className="font-bold text-slate-900 text-xs">{bills.length}</p>
+                                    </div>
+                                </div>
+                                <button onClick={handleLogout} className="w-full bg-rose-50 p-5 rounded-3xl text-rose-600 font-bold active:scale-95 transition-transform flex items-center justify-center gap-3">
+                                    <Icon name="log-out" size={20} />
+                                    Terminar Sessão
+                                </button>
                             </div>
                         )}
                     </main>
 
                     <div className="fixed bottom-8 left-0 right-0 flex justify-center z-50 px-8">
                         <nav className="w-full max-w-[340px] h-20 nav-glass rounded-[2.5rem] flex items-center justify-around px-2 shadow-2xl border border-white/20">
-                            <button onClick={() => setView('home')} className={`p-4 rounded-2xl ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="layout-grid" size={24} /></button>
-                            <button onClick={() => setView('stats')} className={`p-4 rounded-2xl ${view === 'stats' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="bar-chart-3" size={24} /></button>
+                            <button onClick={() => setView('home')} className={`p-4 rounded-2xl transition-colors ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="layout-grid" size={24} /></button>
+                            <button onClick={() => setView('stats')} className={`p-4 rounded-2xl transition-colors ${view === 'stats' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="bar-chart-3" size={24} /></button>
                             <button onClick={() => setShowModal(true)} className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-xl -mt-10 border-4 border-[#fcfcfd] active:scale-90 transition-transform"><Icon name="plus" size={26}/></button>
-                            <button onClick={() => setView('list')} className={`p-4 rounded-2xl ${view === 'list' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="receipt" size={24} /></button>
-                            <button onClick={() => setView('profile')} className={`p-4 rounded-2xl ${view === 'profile' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="user" size={24} /></button>
+                            <button onClick={() => setView('list')} className={`p-4 rounded-2xl transition-colors ${view === 'list' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="receipt" size={24} /></button>
+                            <button onClick={() => setView('profile')} className={`p-4 rounded-2xl transition-colors ${view === 'profile' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="user" size={24} /></button>
                         </nav>
                     </div>
 
@@ -472,7 +487,7 @@
                                     setShowModal(false);
                                 }} className="space-y-5">
                                     <div>
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Nome do Serviço</p>
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Serviço</p>
                                         <input name="name" placeholder="Ex: MEO, EDP..." className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold" required />
                                     </div>
                                     <div>
@@ -487,7 +502,7 @@
                                             <input name="value" type="number" step="0.01" placeholder="0.00€" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold" required />
                                         </div>
                                         <div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Vencimento</p>
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Data Limite</p>
                                             <input name="date" type="date" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-xs" required />
                                         </div>
                                     </div>
@@ -497,8 +512,8 @@
                                                 <Icon name="bell" size={20} />
                                             </div>
                                             <div>
-                                                <p className="text-xs font-black text-indigo-900">Ativar Alarme</p>
-                                                <p className="text-[9px] font-bold text-indigo-400 uppercase">Notificar no dia</p>
+                                                <p className="text-xs font-black text-indigo-900">Lembrete Ativo</p>
+                                                <p className="text-[9px] font-bold text-indigo-400 uppercase">Notificação Push</p>
                                             </div>
                                         </div>
                                         <label className="switch">
@@ -506,7 +521,7 @@
                                             <span className="slider"></span>
                                         </label>
                                     </div>
-                                    <button type="submit" className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black uppercase shadow-xl mt-2 active:scale-95 transition-transform">Adicionar Fatura</button>
+                                    <button type="submit" className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black uppercase shadow-xl mt-2 active:scale-95 transition-transform">Registar Fatura</button>
                                 </form>
                             </div>
                         </div>

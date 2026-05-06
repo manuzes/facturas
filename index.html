@@ -16,29 +16,34 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        try {
-            const firebaseConfig = JSON.parse(__firebase_config);
-            const app = initializeApp(firebaseConfig);
-            const auth = getAuth(app);
-            const db = getFirestore(app);
-            const googleProvider = new GoogleAuthProvider();
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
+        const initFirebase = async () => {
+            try {
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = initializeApp(firebaseConfig);
+                const auth = getAuth(app);
+                const db = getFirestore(app);
+                const googleProvider = new GoogleAuthProvider();
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-            // Configurar persistência para manter a sessão
-            setPersistence(auth, browserLocalPersistence);
+                await setPersistence(auth, browserLocalPersistence);
 
-            window.fb = { 
-                auth, db, appId, 
-                signInWithCustomToken, onAuthStateChanged, 
-                collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
-                googleProvider, signInWithPopup, signOut
-            };
-            window.dispatchEvent(new Event('firebase-ready'));
-        } catch (e) {
-            console.error("Firebase Init Error:", e);
+                window.fb = { 
+                    auth, db, appId, 
+                    signInWithCustomToken, signInAnonymously, onAuthStateChanged, 
+                    collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
+                    googleProvider, signInWithPopup, signOut
+                };
+                window.dispatchEvent(new Event('firebase-ready'));
+            } catch (e) {
+                console.error("Firebase Init Error:", e);
+            }
+        };
+
+        if (typeof __firebase_config !== 'undefined') {
+            initFirebase();
         }
     </script>
 
@@ -143,53 +148,48 @@
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
 
-            // 1. Ouvir inicialização do Firebase
             useEffect(() => {
                 const handleReady = () => setFbReady(true);
                 window.addEventListener('firebase-ready', handleReady);
-                
-                // Timeout para garantir que o utilizador não fica preso se o firebase falhar
-                const timer = setTimeout(() => {
-                    setLoading(false);
-                }, 3000);
-
-                return () => {
-                    window.removeEventListener('firebase-ready', handleReady);
-                    clearTimeout(timer);
-                };
+                return () => window.removeEventListener('firebase-ready', handleReady);
             }, []);
 
-            // 2. Controlar Estado de Autenticação
             useEffect(() => {
                 if (!fbReady) return;
-                const { auth, onAuthStateChanged, signInWithCustomToken } = window.fb;
+                const { auth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } = window.fb;
                 
-                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                const unsubscribe = onAuthStateChanged(auth, async (u) => {
                     if (u && !u.isAnonymous) {
                         setUser(u);
+                        setLoading(false);
                     } else {
-                        setUser(null);
+                        // Tentar login com token se existir, senão limpa o loading
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            try {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } catch (e) {
+                                setUser(null);
+                                setLoading(false);
+                            }
+                        } else {
+                            setUser(null);
+                            setLoading(false);
+                        }
                     }
-                    setLoading(false);
                 });
-
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    signInWithCustomToken(auth, __initial_auth_token).catch(() => setLoading(false));
-                }
 
                 return () => unsubscribe();
             }, [fbReady]);
 
-            // 3. Ouvir Dados
             useEffect(() => {
                 if (!user || !fbReady) return;
-                const { db, appId, collection, onSnapshot, query } = window.fb;
+                const { db, appId, collection, onSnapshot } = window.fb;
                 
                 const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => console.error(err));
+                }, (err) => console.error("Firestore error:", err));
                 
                 return () => unsubscribe();
             }, [user, fbReady]);
@@ -202,22 +202,22 @@
                 
                 const { auth, googleProvider, signInWithPopup } = window.fb;
                 setLoginError(null);
-                setLoading(true);
                 
                 try { 
-                    await signInWithPopup(auth, googleProvider);
+                    const result = await signInWithPopup(auth, googleProvider);
+                    if (result.user) setUser(result.user);
                 } catch (e) { 
                     console.error("Login Error:", e);
-                    setLoading(false);
                     if (e.code === 'auth/popup-blocked') {
-                        setLoginError("O seu navegador bloqueou a janela de login. Por favor, permita pop-ups.");
+                        setLoginError("O navegador bloqueou a janela de login. Permita pop-ups.");
                     } else {
-                        setLoginError("Ocorreu um erro ao tentar entrar. Tente novamente.");
+                        setLoginError("O sistema ainda está a carregar. Tente novamente em segundos.");
                     }
                 }
             };
 
             const handleLogout = async () => {
+                if (!fbReady) return;
                 const { auth, signOut } = window.fb;
                 await signOut(auth);
                 setUser(null);
@@ -257,7 +257,7 @@
             if (loading) return (
                 <div className="min-h-screen flex flex-col items-center justify-center bg-white">
                     <div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">Sincronizando...</p>
+                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">Sincronizando Dados...</p>
                 </div>
             );
 
@@ -267,7 +267,7 @@
                         <AppLogo size={80} className="text-slate-900" />
                     </div>
                     <h1 className="text-3xl font-[900] text-slate-900 mb-2 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira pessoal segura e automatizada.</p>
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium leading-relaxed">Gestão financeira pessoal segura e automatizada.</p>
                     
                     <button onClick={handleGoogleLogin} className="w-full max-w-xs p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
                         <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" />
@@ -275,14 +275,15 @@
                     </button>
 
                     {loginError && (
-                        <p className="mt-6 text-rose-500 text-xs font-bold bg-rose-50 p-4 rounded-xl max-w-xs">{loginError}</p>
+                        <div className="mt-8 bg-rose-50 text-rose-500 text-sm font-medium p-6 rounded-3xl max-w-xs leading-relaxed border border-rose-100">
+                            {loginError}
+                        </div>
                     )}
                 </div>
             );
 
             return (
                 <div className="min-h-screen pb-32 max-w-md mx-auto relative bg-[#fcfcfd] fade-in">
-                    {/* Header */}
                     <header className="px-6 pt-12 pb-6 flex justify-between items-center sticky top-0 bg-[#fcfcfd]/80 backdrop-blur-md z-40">
                         <div>
                             <h1 className="text-xl font-[900] text-slate-900 tracking-tight">Olá, {user.displayName?.split(' ')[0]}</h1>
@@ -383,7 +384,6 @@
                         )}
                     </main>
 
-                    {/* Navbar */}
                     <div className="fixed bottom-6 left-0 right-0 flex justify-center px-6 z-50">
                         <nav className="w-full max-w-[320px] h-16 nav-glass rounded-full flex items-center justify-around shadow-xl">
                             <button onClick={() => setView('home')} className={`p-3 rounded-full transition-colors ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
@@ -394,7 +394,6 @@
                         </nav>
                     </div>
 
-                    {/* Modal */}
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-end">
                             <div className="bg-white w-full max-w-md mx-auto rounded-t-[2.5rem] p-8 fade-in">

@@ -16,7 +16,7 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         const initFirebase = async () => {
@@ -28,8 +28,10 @@
                 const googleProvider = new GoogleAuthProvider();
                 const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-                // Garantir que a sessão persiste no navegador
-                await setPersistence(auth, browserLocalPersistence);
+                // Tenta autenticar com token customizado se existir, caso contrário anónimo (requisito do sistema)
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                }
 
                 window.fb = { 
                     auth, db, appId, 
@@ -137,7 +139,6 @@
         function App() {
             const [fbReady, setFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
-            // Alterado para false inicialmente para permitir renderização imediata do login se necessário
             const [loading, setLoading] = useState(true);
             const [loginError, setLoginError] = useState(null);
             const [view, setView] = useState('home'); 
@@ -147,7 +148,9 @@
             const chartInstance = useRef(null);
 
             useEffect(() => {
-                const handleReady = () => setFbReady(true);
+                const handleReady = () => {
+                    setFbReady(true);
+                };
                 const handleError = () => {
                     setFbReady(false);
                     setLoading(false);
@@ -155,10 +158,10 @@
                 window.addEventListener('firebase-ready', handleReady);
                 window.addEventListener('firebase-error', handleError);
                 
-                // Fail-safe: se o firebase demorar muito, para o loading
-                const timer = setTimeout(() => setLoading(false), 3000);
-
                 if (window.fb) handleReady();
+                
+                // Timeout para não ficar preso no loading
+                const timer = setTimeout(() => setLoading(false), 2000);
 
                 return () => {
                     window.removeEventListener('firebase-ready', handleReady);
@@ -168,10 +171,9 @@
             }, []);
 
             useEffect(() => {
-                if (!fbReady) return;
+                if (!fbReady || !window.fb) return;
                 
                 const { auth, onAuthStateChanged } = window.fb;
-                
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     setUser(u);
                     setLoading(false);
@@ -181,33 +183,34 @@
             }, [fbReady]);
 
             useEffect(() => {
-                if (!user || !fbReady) return;
+                if (!user || !fbReady || !window.fb) return;
                 const { db, appId, collection, onSnapshot } = window.fb;
                 
                 const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => console.error(err));
+                }, (err) => {
+                    console.error("Firestore error:", err);
+                });
                 
                 return () => unsubscribe();
             }, [user, fbReady]);
 
             const handleGoogleLogin = async () => {
-                if (!fbReady) return;
+                if (!window.fb) return;
                 const { auth, googleProvider, signInWithPopup } = window.fb;
                 setLoginError(null);
-                setLoading(true);
                 try { 
                     await signInWithPopup(auth, googleProvider);
                 } catch (e) { 
-                    setLoginError("Erro ao entrar. Tente novamente.");
-                    setLoading(false);
+                    console.error("Login error:", e);
+                    setLoginError("Não foi possível abrir a janela de login.");
                 }
             };
 
             const handleLogout = async () => {
-                if (!fbReady) return;
+                if (!window.fb) return;
                 const { auth, signOut } = window.fb;
                 try {
                     await signOut(auth);
@@ -251,7 +254,7 @@
             if (loading) return (
                 <div className="min-h-screen flex flex-col items-center justify-center bg-white">
                     <div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">A preparar a sua carteira...</p>
+                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">A carregar...</p>
                 </div>
             );
 
@@ -268,7 +271,7 @@
                         Entrar com Google
                     </button>
 
-                    {loginError && <div className="mt-8 text-rose-500 text-sm font-medium">{loginError}</div>}
+                    {loginError && <div className="mt-8 text-rose-500 text-xs font-bold uppercase">{loginError}</div>}
                     
                     <div className="mt-20 opacity-20">
                         <p className="text-[10px] font-black uppercase tracking-[0.2em]">Versão 2.5 Preview</p>

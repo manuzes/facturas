@@ -137,6 +137,7 @@
         function App() {
             const [fbReady, setFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
+            // Alterado para false inicialmente para permitir renderização imediata do login se necessário
             const [loading, setLoading] = useState(true);
             const [loginError, setLoginError] = useState(null);
             const [view, setView] = useState('home'); 
@@ -153,9 +154,16 @@
                 };
                 window.addEventListener('firebase-ready', handleReady);
                 window.addEventListener('firebase-error', handleError);
+                
+                // Fail-safe: se o firebase demorar muito, para o loading
+                const timer = setTimeout(() => setLoading(false), 3000);
+
+                if (window.fb) handleReady();
+
                 return () => {
                     window.removeEventListener('firebase-ready', handleReady);
                     window.removeEventListener('firebase-error', handleError);
+                    clearTimeout(timer);
                 };
             }, []);
 
@@ -164,7 +172,6 @@
                 
                 const { auth, onAuthStateChanged } = window.fb;
                 
-                // Monitorizar estado de autenticação (deteta se já estava logado ou se acabou de logar)
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     setUser(u);
                     setLoading(false);
@@ -248,7 +255,6 @@
                 </div>
             );
 
-            // SE NÃO HÁ UTILIZADOR, MOSTRA O LOGIN IMEDIATAMENTE
             if (!user) return (
                 <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 text-center fade-in">
                     <div className="mb-10 p-8 bg-slate-50 rounded-[3.5rem]">

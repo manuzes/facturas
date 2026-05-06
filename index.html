@@ -19,24 +19,27 @@
         import { getAuth, onAuthStateChanged, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const googleProvider = new GoogleAuthProvider();
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
+        try {
+            const firebaseConfig = JSON.parse(__firebase_config);
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            const googleProvider = new GoogleAuthProvider();
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-        // Configurar persistência local para manter o login após refresh
-        setPersistence(auth, browserLocalPersistence);
+            // Configurar persistência
+            setPersistence(auth, browserLocalPersistence);
 
-        window.fb = { 
-            auth, db, appId, 
-            signInWithCustomToken, onAuthStateChanged, 
-            collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
-            googleProvider, signInWithPopup, signOut
-        };
-
-        window.dispatchEvent(new Event('firebase-ready'));
+            window.fb = { 
+                auth, db, appId, 
+                signInWithCustomToken, onAuthStateChanged, 
+                collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
+                googleProvider, signInWithPopup, signOut
+            };
+            window.dispatchEvent(new Event('firebase-ready'));
+        } catch (e) {
+            console.error("Firebase Init Error:", e);
+        }
     </script>
 
     <style>
@@ -47,9 +50,6 @@
             background-color: #fcfcfd; 
             color: #0f172a;
             margin: 0;
-            -webkit-font-smoothing: antialiased;
-            overflow-x: hidden;
-            overscroll-behavior-y: none;
             user-select: none;
             -webkit-user-select: none;
         }
@@ -61,7 +61,7 @@
         }
 
         .nav-glass {
-            background: rgba(255, 255, 255, 0.8);
+            background: rgba(255, 255, 255, 0.85);
             backdrop-filter: blur(20px);
             -webkit-backdrop-filter: blur(20px);
             border-top: 1px solid rgba(0, 0, 0, 0.05);
@@ -71,8 +71,7 @@
             background: white;
             border-radius: 2.2rem;
             border: 1px solid #f1f5f9;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02);
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: all 0.2s ease;
         }
 
         .bill-card:active { transform: scale(0.98); }
@@ -115,9 +114,6 @@
         }
         input:checked + .slider { background-color: #4f46e5; }
         input:checked + .slider:before { transform: translateX(20px); }
-
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
         .custom-select {
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
@@ -162,33 +158,32 @@
             const [view, setView] = useState('home'); 
             const [bills, setBills] = useState([]);
             const [showModal, setShowModal] = useState(false);
-            
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
 
+            // 1. Ouvir inicialização do Firebase
             useEffect(() => {
                 const handleReady = () => setFbReady(true);
                 window.addEventListener('firebase-ready', handleReady);
-                return () => window.removeEventListener('firebase-ready', handleReady);
+                
+                // Timeout de segurança para não ficar em loading eterno
+                const timer = setTimeout(() => {
+                    if (loading) setLoading(false);
+                }, 4000);
+
+                return () => {
+                    window.removeEventListener('firebase-ready', handleReady);
+                    clearTimeout(timer);
+                };
             }, []);
 
+            // 2. Controlar Estado de Autenticação
             useEffect(() => {
                 if (!fbReady) return;
                 const { auth, onAuthStateChanged, signInWithCustomToken } = window.fb;
                 
-                const initAuth = async () => {
-                    try {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        }
-                        // Nota: Removemos o signInAnonymously para forçar o login Google
-                    } catch (err) { console.error("Erro Auth Init:", err); }
-                };
-
-                initAuth();
-                
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
-                    // Só aceitamos o utilizador se ele não for anónimo (ou seja, se tiver display name/email do Google)
+                    // Só permitimos utilizadores reais (Google), não anónimos
                     if (u && !u.isAnonymous) {
                         setUser(u);
                     } else {
@@ -196,48 +191,70 @@
                     }
                     setLoading(false);
                 });
+
+                // Tentar autenticação por token se disponível
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    signInWithCustomToken(auth, __initial_auth_token).catch(() => setLoading(false));
+                }
+
                 return () => unsubscribe();
             }, [fbReady]);
 
+            // 3. Ouvir Dados (Firestore)
             useEffect(() => {
                 if (!user || !fbReady) return;
-                const { db, appId, collection, onSnapshot } = window.fb;
+                const { db, appId, collection, onSnapshot, query } = window.fb;
                 
                 const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
                 }, (err) => {
-                    console.error("Erro Firestore:", err);
+                    console.error("Firestore Error:", err);
                 });
                 
                 return () => unsubscribe();
             }, [user, fbReady]);
 
+            const handleGoogleLogin = async () => {
+                if (!fbReady) return;
+                const { auth, googleProvider, signInWithPopup } = window.fb;
+                try { 
+                    setLoading(true);
+                    await signInWithPopup(auth, googleProvider);
+                } catch (e) { 
+                    console.error("Login Error:", e); 
+                    setLoading(false);
+                }
+            };
+
+            const handleLogout = async () => {
+                const { auth, signOut } = window.fb;
+                await signOut(auth);
+                setUser(null);
+                setView('home');
+            };
+
+            // Helpers de Dados
             const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
             const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
 
+            // Renderização do Gráfico
             useEffect(() => {
                 if (view === 'stats' && chartRef.current && bills.length > 0) {
                     if (chartInstance.current) chartInstance.current.destroy();
                     const ctx = chartRef.current.getContext('2d');
-                    const gradient = ctx.createLinearGradient(0, 0, 0, 250);
-                    gradient.addColorStop(0, 'rgba(79, 70, 229, 0.15)');
-                    gradient.addColorStop(1, 'rgba(79, 70, 229, 0)');
-
                     chartInstance.current = new Chart(ctx, {
                         type: 'line',
                         data: {
                             labels: ['Anterior', 'Atual'],
                             datasets: [{
-                                label: 'Gastos',
-                                data: [totalPago * 0.8, totalPago + totalPendente],
+                                data: [totalPago * 0.7, totalPago + totalPendente],
                                 borderColor: '#4f46e5',
                                 borderWidth: 4,
-                                tension: 0.45,
+                                tension: 0.4,
                                 fill: true,
-                                backgroundColor: gradient,
-                                pointRadius: 4
+                                backgroundColor: 'rgba(79, 70, 229, 0.05)'
                             }]
                         },
                         options: {
@@ -250,225 +267,143 @@
                 }
             }, [view, totalPendente, totalPago, bills.length]);
 
-            const handleGoogleLogin = async () => {
-                const { auth, googleProvider, signInWithPopup } = window.fb;
-                try { 
-                    setLoading(true);
-                    const result = await signInWithPopup(auth, googleProvider);
-                    // O onAuthStateChanged tratará do setUser
-                } catch (e) { 
-                    console.error("Erro Google Login:", e); 
-                    setLoading(false);
-                }
-            };
-
-            const handleLogout = async () => {
-                const { auth, signOut } = window.fb;
-                await signOut(auth);
-                setUser(null);
-                setView('home');
-            };
-
-            const togglePaid = async (bill) => {
-                if (!user || !fbReady) return;
-                const { db, appId, doc, updateDoc } = window.fb;
-                try {
-                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id);
-                    await updateDoc(docRef, { paid: !bill.paid });
-                } catch (e) { console.error(e); }
-            };
-
-            const deleteBill = async (id) => {
-                const { db, appId, doc, deleteDoc } = window.fb;
-                try {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id));
-                } catch (e) { console.error(e); }
-            };
-
-            if (loading || !fbReady) return (
-                <div className="min-h-screen flex items-center justify-center bg-white">
-                    <div className="w-10 h-10 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div>
+            if (loading) return (
+                <div className="min-h-screen flex flex-col items-center justify-center bg-white">
+                    <div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
+                    <p className="text-slate-400 font-bold text-xs uppercase tracking-widest">A ligar...</p>
                 </div>
             );
 
             if (!user) return (
                 <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 text-center fade-in">
                     <div className="mb-10 p-8 bg-slate-50 rounded-[3.5rem]">
-                        <AppLogo size={100} className="text-slate-900" />
+                        <AppLogo size={80} className="text-slate-900" />
                     </div>
-                    <h1 className="text-3xl font-[900] text-slate-900 mb-4 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium italic">Inicia sessão para gerir as tuas finanças com total segurança.</p>
+                    <h1 className="text-3xl font-[900] text-slate-900 mb-2 tracking-tighter">Facturas Pro</h1>
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira pessoal com autenticação segura Google.</p>
                     <button onClick={handleGoogleLogin} className="w-full max-w-xs flex items-center justify-center gap-4 p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
                         <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" />
                         Entrar com Google
                     </button>
-                    <p className="mt-8 text-[10px] text-slate-300 uppercase font-bold tracking-widest">Acesso Restrito a Utilizadores Autorizados</p>
                 </div>
             );
 
             return (
                 <div className="min-h-screen pb-32 max-w-md mx-auto relative bg-[#fcfcfd] fade-in">
-                    <header className="px-6 pt-12 pb-6 flex justify-between items-start sticky top-0 bg-[#fcfcfd]/90 backdrop-blur-xl z-40">
+                    {/* Header */}
+                    <header className="px-6 pt-12 pb-6 flex justify-between items-center sticky top-0 bg-[#fcfcfd]/80 backdrop-blur-md z-40">
                         <div>
-                            <h1 className="text-2xl font-[900] text-slate-900 tracking-tight">
-                                Olá, {user.displayName?.split(' ')[0]}
-                            </h1>
-                            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.2em] mt-2 flex items-center gap-1">
-                                <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full"></span>
-                                Sincronizado
-                            </p>
+                            <h1 className="text-xl font-[900] text-slate-900 tracking-tight">Olá, {user.displayName?.split(' ')[0]}</h1>
+                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Sessão Ativa</p>
                         </div>
                         <button onClick={() => setView('profile')}>
-                            <img 
-                                src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}&background=4f46e5&color=fff`} 
-                                className="w-12 h-12 rounded-2xl border-2 border-white shadow-xl active:scale-90 transition-transform object-cover" 
-                                alt="Foto de Perfil"
-                            />
+                            <img src={user.photoURL} className="w-10 h-10 rounded-xl shadow-lg border-2 border-white" />
                         </button>
                     </header>
 
-                    <main className="px-6 space-y-8 mt-4 no-scrollbar">
+                    <main className="px-6 space-y-8 mt-4">
                         {view === 'home' && (
                             <>
-                                <div className="dark-card p-8 text-white relative overflow-hidden">
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 opacity-70">Pendente este mês</p>
-                                    <div className="flex items-baseline gap-1 mb-8">
-                                        <h2 className="text-5xl font-[900] tracking-tighter">{totalPendente.toFixed(2).replace('.', ',')}</h2>
-                                        <span className="text-2xl font-bold text-slate-400">€</span>
+                                <div className="dark-card p-8 text-white">
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Pendente</p>
+                                    <div className="flex items-baseline gap-1 mb-6">
+                                        <h2 className="text-4xl font-[900]">{totalPendente.toFixed(2)}</h2>
+                                        <span className="text-xl font-bold text-slate-400">€</span>
                                     </div>
-                                    <div className="bg-white/10 px-4 py-2 rounded-full border border-white/10 inline-flex items-center gap-2">
-                                        <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full"></div>
-                                        <span className="text-[9px] font-black uppercase tracking-wider">{bills.filter(b=>b.paid).length} Liquidadas</span>
+                                    <div className="flex gap-4">
+                                        <div className="bg-white/10 px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider">
+                                            {bills.length} Total
+                                        </div>
                                     </div>
                                 </div>
 
-                                <section className="space-y-4">
-                                    <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em]">Próximas Faturas</h3>
-                                    <div className="space-y-4">
-                                        {bills.filter(b => !b.paid).length === 0 ? (
-                                            <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-[2.5rem] text-slate-300 font-bold text-sm italic">
-                                                Tudo em dia por agora.
-                                            </div>
-                                        ) : (
-                                            bills.filter(b => !b.paid).map(bill => (
-                                                <div key={bill.id} className="bill-card p-5 flex items-center justify-between relative fade-in">
-                                                    <div className="flex items-center gap-5">
-                                                        <div className="w-14 h-14 bg-slate-50 text-indigo-500 rounded-2xl flex items-center justify-center">
-                                                            <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={24} />
-                                                        </div>
-                                                        <div>
-                                                            <div className="flex items-center gap-2">
-                                                                <p className="font-extrabold text-slate-900">{bill.name}</p>
-                                                            </div>
-                                                            <p className="text-[10px] font-bold mt-1 text-slate-400 uppercase">Vence a {bill.due}</p>
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex items-center gap-3">
-                                                        <p className="font-[900] text-slate-900 text-lg">{Number(bill.value).toFixed(2)}€</p>
-                                                        <button onClick={() => togglePaid(bill)} className="w-10 h-10 bg-slate-50 rounded-xl flex items-center justify-center text-slate-200 hover:text-emerald-500 transition-colors">
-                                                            <Icon name="check" size={20} />
-                                                        </button>
-                                                    </div>
+                                <div className="space-y-4">
+                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Faturas Próximas</h3>
+                                    {bills.filter(b => !b.paid).map(bill => (
+                                        <div key={bill.id} className="bill-card p-5 flex items-center justify-between">
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-12 h-12 bg-slate-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                                                    <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={20} />
                                                 </div>
-                                            ))
-                                        )}
-                                    </div>
-                                </section>
+                                                <div>
+                                                    <p className="font-bold text-slate-900">{bill.name}</p>
+                                                    <p className="text-[10px] font-bold text-slate-400 uppercase">Vence a {bill.due}</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <p className="font-black text-slate-900">{Number(bill.value).toFixed(2)}€</p>
+                                                <button onClick={async () => {
+                                                    const { db, appId, doc, updateDoc } = window.fb;
+                                                    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), { paid: true });
+                                                }} className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-200 hover:text-emerald-500">
+                                                    <Icon name="check" size={16} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
                             </>
                         )}
 
                         {view === 'stats' && (
-                            <div className="space-y-6 fade-in">
-                                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm text-center">
-                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">Tendência de Gastos</h3>
-                                    <div className="chart-container">
-                                        <canvas ref={chartRef}></canvas>
-                                    </div>
-                                </div>
+                            <div className="bg-white p-6 rounded-[2rem] border border-slate-100">
+                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-6">Gastos Acumulados</h3>
+                                <div className="chart-container"><canvas ref={chartRef}></canvas></div>
                             </div>
                         )}
 
                         {view === 'list' && (
-                            <div className="space-y-4 fade-in">
-                                <div className="flex justify-between items-center">
-                                    <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em]">Histórico Geral</h3>
-                                </div>
-                                {bills.length === 0 ? (
-                                    <p className="text-center py-10 text-slate-300 font-bold italic">Sem faturas registadas.</p>
-                                ) : (
-                                    bills.map(bill => (
-                                        <div key={bill.id} className={`bill-card p-5 flex items-center justify-between ${bill.paid ? 'opacity-40' : ''}`}>
-                                            <div className="flex items-center gap-4">
-                                                <div className="w-12 h-12 bg-slate-50 rounded-xl flex items-center justify-center text-slate-400">
-                                                    <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={20} />
-                                                </div>
-                                                <div>
-                                                    <p className="font-bold">{bill.name}</p>
-                                                    <p className="text-[10px] text-slate-400 font-bold uppercase">{bill.value}€ • {bill.due}</p>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <button onClick={() => togglePaid(bill)} className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center transition-all ${bill.paid ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-100 text-slate-200'}`}>
-                                                    <Icon name="check" size={18} />
-                                                </button>
-                                                <button onClick={() => deleteBill(bill.id)} className="w-9 h-9 text-rose-200 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={16} /></button>
-                                            </div>
+                            <div className="space-y-4">
+                                {bills.map(bill => (
+                                    <div key={bill.id} className={`bill-card p-4 flex items-center justify-between ${bill.paid ? 'opacity-50' : ''}`}>
+                                        <div className="flex items-center gap-3">
+                                            <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} className="text-slate-400" />
+                                            <span className="font-bold text-sm">{bill.name}</span>
                                         </div>
-                                    ))
-                                )}
+                                        <div className="flex items-center gap-4">
+                                            <span className="font-black text-sm">{bill.value}€</span>
+                                            <button onClick={async () => {
+                                                const { db, appId, doc, deleteDoc } = window.fb;
+                                                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
+                                            }} className="text-rose-200"><Icon name="trash-2" size={14}/></button>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         )}
 
                         {view === 'profile' && (
-                            <div className="space-y-8 py-4 fade-in text-center">
-                                <div className="relative inline-block">
-                                    <img 
-                                        src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}&background=4f46e5&color=fff`} 
-                                        className="w-32 h-32 rounded-[3rem] border-4 border-white shadow-2xl mx-auto object-cover" 
-                                        alt="Avatar Google"
-                                    />
-                                    <div className="absolute -bottom-2 -right-2 bg-indigo-600 text-white p-2 rounded-xl border-4 border-white shadow-lg">
-                                        <Icon name="check" size={16} />
-                                    </div>
-                                </div>
+                            <div className="text-center py-8 space-y-6">
+                                <img src={user.photoURL} className="w-24 h-24 rounded-[2rem] mx-auto border-4 border-white shadow-xl" />
                                 <div>
-                                    <h2 className="text-2xl font-black text-slate-900">{user.displayName}</h2>
-                                    <p className="text-sm text-slate-400 font-medium">{user.email}</p>
+                                    <h2 className="text-xl font-black">{user.displayName}</h2>
+                                    <p className="text-xs text-slate-400">{user.email}</p>
                                 </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="bg-slate-50 p-4 rounded-2xl text-center">
-                                        <p className="text-[10px] text-slate-400 font-black uppercase mb-1">Membro desde</p>
-                                        <p className="font-bold text-slate-900 text-xs">Maio 2024</p>
-                                    </div>
-                                    <div className="bg-slate-50 p-4 rounded-2xl text-center">
-                                        <p className="text-[10px] text-slate-400 font-black uppercase mb-1">Faturas</p>
-                                        <p className="font-bold text-slate-900 text-xs">{bills.length}</p>
-                                    </div>
-                                </div>
-                                <button onClick={handleLogout} className="w-full bg-rose-50 p-5 rounded-3xl text-rose-600 font-bold active:scale-95 transition-transform flex items-center justify-center gap-3">
-                                    <Icon name="log-out" size={20} />
-                                    Terminar Sessão
+                                <button onClick={handleLogout} className="w-full bg-rose-50 text-rose-600 p-4 rounded-2xl font-bold flex items-center justify-center gap-2">
+                                    <Icon name="log-out" size={18} /> Sair
                                 </button>
                             </div>
                         )}
                     </main>
 
-                    <div className="fixed bottom-8 left-0 right-0 flex justify-center z-50 px-8">
-                        <nav className="w-full max-w-[340px] h-20 nav-glass rounded-[2.5rem] flex items-center justify-around px-2 shadow-2xl border border-white/20">
-                            <button onClick={() => setView('home')} className={`p-4 rounded-2xl transition-colors ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="layout-grid" size={24} /></button>
-                            <button onClick={() => setView('stats')} className={`p-4 rounded-2xl transition-colors ${view === 'stats' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="bar-chart-3" size={24} /></button>
-                            <button onClick={() => setShowModal(true)} className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-xl -mt-10 border-4 border-[#fcfcfd] active:scale-90 transition-transform"><Icon name="plus" size={26}/></button>
-                            <button onClick={() => setView('list')} className={`p-4 rounded-2xl transition-colors ${view === 'list' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="receipt" size={24} /></button>
-                            <button onClick={() => setView('profile')} className={`p-4 rounded-2xl transition-colors ${view === 'profile' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="user" size={24} /></button>
+                    {/* Navbar */}
+                    <div className="fixed bottom-6 left-0 right-0 flex justify-center px-6 z-50">
+                        <nav className="w-full max-w-[320px] h-16 nav-glass rounded-full flex items-center justify-around shadow-xl">
+                            <button onClick={() => setView('home')} className={`p-3 rounded-full ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
+                            <button onClick={() => setView('stats')} className={`p-3 rounded-full ${view === 'stats' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
+                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd]"><Icon name="plus" /></button>
+                            <button onClick={() => setView('list')} className={`p-3 rounded-full ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="list" /></button>
+                            <button onClick={() => setView('profile')} className={`p-3 rounded-full ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="user" /></button>
                         </nav>
                     </div>
 
+                    {/* Modal */}
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-end">
-                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[3rem] p-8 fade-in overflow-y-auto max-h-[90vh]">
+                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[2.5rem] p-8 fade-in">
                                 <div className="flex justify-between items-center mb-6">
-                                    <h2 className="text-xl font-black">Nova Fatura</h2>
-                                    <button onClick={() => setShowModal(false)} className="p-2 bg-slate-50 rounded-full text-slate-400"><Icon name="x" size={20}/></button>
+                                    <h2 className="font-black text-lg">Nova Fatura</h2>
+                                    <button onClick={() => setShowModal(false)}><Icon name="x" className="text-slate-300" /></button>
                                 </div>
                                 <form onSubmit={async (e) => {
                                     e.preventDefault();
@@ -477,51 +412,23 @@
                                     const id = Date.now().toString();
                                     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), {
                                         name: f.get('name'),
-                                        value: parseFloat(f.get('value')),
-                                        due: f.get('date'),
+                                        value: f.get('value'),
                                         category: f.get('category'),
-                                        alarm: f.get('alarm') === 'on',
+                                        due: f.get('date'),
                                         paid: false,
                                         createdAt: Date.now()
                                     });
                                     setShowModal(false);
-                                }} className="space-y-5">
-                                    <div>
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Serviço</p>
-                                        <input name="name" placeholder="Ex: MEO, EDP..." className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold" required />
-                                    </div>
-                                    <div>
-                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Categoria</p>
-                                        <select name="category" className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold text-slate-700 custom-select" required>
-                                            {CATEGORIES.map(cat => <option key={cat.id} value={cat.id}>{cat.label}</option>)}
-                                        </select>
-                                    </div>
+                                }} className="space-y-4">
+                                    <input name="name" placeholder="Serviço" className="w-full p-4 bg-slate-50 rounded-xl font-bold" required />
+                                    <select name="category" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-500 custom-select">
+                                        {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                                    </select>
                                     <div className="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Valor</p>
-                                            <input name="value" type="number" step="0.01" placeholder="0.00€" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold" required />
-                                        </div>
-                                        <div>
-                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Data Limite</p>
-                                            <input name="date" type="date" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-xs" required />
-                                        </div>
+                                        <input name="value" type="number" step="0.01" placeholder="Valor €" className="p-4 bg-slate-50 rounded-xl font-bold" required />
+                                        <input name="date" type="date" className="p-4 bg-slate-50 rounded-xl font-bold text-xs" required />
                                     </div>
-                                    <div className="flex items-center justify-between p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600">
-                                                <Icon name="bell" size={20} />
-                                            </div>
-                                            <div>
-                                                <p className="text-xs font-black text-indigo-900">Lembrete Ativo</p>
-                                                <p className="text-[9px] font-bold text-indigo-400 uppercase">Notificação Push</p>
-                                            </div>
-                                        </div>
-                                        <label className="switch">
-                                            <input type="checkbox" name="alarm" />
-                                            <span className="slider"></span>
-                                        </label>
-                                    </div>
-                                    <button type="submit" className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black uppercase shadow-xl mt-2 active:scale-95 transition-transform">Registar Fatura</button>
+                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100">Guardar</button>
                                 </form>
                             </div>
                         </div>

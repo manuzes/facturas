@@ -32,28 +32,31 @@
         
         const initFirebase = async () => {
             try {
+                if (typeof __firebase_config === 'undefined') {
+                    console.error("Configuração do Firebase em falta!");
+                    window.dispatchEvent(new Event('firebase-error'));
+                    return;
+                }
+
                 const firebaseConfig = JSON.parse(__firebase_config);
                 const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
                 
-                // Configurar persistência local para manter o login
                 await setPersistence(auth, browserLocalPersistence);
                 
                 const db = getFirestore(app);
                 const googleProvider = new GoogleAuthProvider();
                 const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-                // Tenta autenticar com token customizado do ambiente se disponível
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     try {
                         await signInWithCustomToken(auth, __initial_auth_token);
                     } catch(e) {
-                        console.warn("Custom token failed, falling back...");
+                        console.warn("Token falhou, seguindo normal...");
                     }
                 }
 
-                // Verificar se há um resultado de redirecionamento (vinda do login Google)
-                getRedirectResult(auth).catch(err => console.error("Redirect Result Error:", err));
+                getRedirectResult(auth).catch(err => console.error("Erro Redirect:", err));
 
                 window.fb = { 
                     auth, db, appId, 
@@ -63,13 +66,16 @@
                 };
                 window.dispatchEvent(new Event('firebase-ready'));
             } catch (e) {
-                console.error("Firebase Init Error:", e);
+                console.error("Erro no Init Firebase:", e);
                 window.dispatchEvent(new Event('firebase-error'));
             }
         };
 
-        if (typeof __firebase_config !== 'undefined') {
+        // Garante que tentamos inicializar logo que possível
+        if (document.readyState === 'complete') {
             initFirebase();
+        } else {
+            window.addEventListener('load', initFirebase);
         }
     </script>
 
@@ -114,10 +120,12 @@
             justify-content: center;
             gap: 12px;
             cursor: pointer;
+            transition: all 0.2s;
         }
 
-        .btn-google:hover { background-color: #f9fafb; }
+        .btn-google:hover { background-color: #f9fafb; border-color: #d1d5db; }
         .btn-google:active { transform: scale(0.97); }
+        .btn-google:disabled { opacity: 0.5; cursor: not-allowed; }
 
         .fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
@@ -162,7 +170,7 @@
             const [fbReady, setFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
             const [loading, setLoading] = useState(true);
-            const [loginError, setLoginError] = useState(null);
+            const [loginStatus, setLoginStatus] = useState(null);
             const [view, setView] = useState('home'); 
             const [bills, setBills] = useState([]);
             const [showModal, setShowModal] = useState(false);
@@ -170,17 +178,27 @@
             const chartInstance = useRef(null);
 
             useEffect(() => {
-                const handleReady = () => setFbReady(true);
+                const handleReady = () => {
+                    console.log("Firebase está pronto.");
+                    setFbReady(true);
+                };
                 const handleError = () => {
+                    console.error("Firebase falhou ao inicializar.");
                     setFbReady(false);
                     setLoading(false);
+                    setLoginStatus("Erro crítico de inicialização.");
                 };
+
                 window.addEventListener('firebase-ready', handleReady);
                 window.addEventListener('firebase-error', handleError);
                 
                 if (window.fb) handleReady();
                 
-                const timer = setTimeout(() => setLoading(false), 2000);
+                // Backup para parar o loading se nada acontecer
+                const timer = setTimeout(() => {
+                    if (loading) setLoading(false);
+                }, 3000);
+
                 return () => {
                     window.removeEventListener('firebase-ready', handleReady);
                     window.removeEventListener('firebase-error', handleError);
@@ -209,27 +227,39 @@
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
                 }, (err) => {
-                    console.error("Firestore error:", err);
+                    console.error("Erro no Firestore:", err);
                 });
                 
                 return () => unsubscribe();
             }, [user, fbReady]);
 
-            const handleGoogleLogin = async () => {
-                if (!window.fb) return;
+            const handleGoogleLogin = async (e) => {
+                // Previne qualquer comportamento default do browser
+                if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+
+                if (!window.fb) {
+                    setLoginStatus("Aguardando Firebase... Tente novamente em 2 segundos.");
+                    return;
+                }
+
                 const { auth, googleProvider, signInWithPopup, signInWithRedirect } = window.fb;
-                setLoginError(null);
+                setLoginStatus("A abrir janela de login...");
                 
                 try { 
-                    // Tentativa primária com Popup
+                    // Em desktop tenta popup primeiro
                     await signInWithPopup(auth, googleProvider);
+                    setLoginStatus(null);
                 } catch (e) { 
-                    console.warn("Popup blocked or failed, trying redirect...", e);
+                    console.warn("Popup bloqueado ou falhou, a tentar redirect...", e);
                     try {
-                        // Fallback para Redirecionamento (melhor para browsers móveis/bloqueados)
+                        setLoginStatus("A redirecionar...");
                         await signInWithRedirect(auth, googleProvider);
                     } catch (err2) {
-                        setLoginError("Erro ao autenticar. Verifique as definições do browser.");
+                        setLoginStatus("Erro ao autenticar. Verifique bloqueadores de pop-ups.");
+                        console.error("Erro Final de Login:", err2);
                     }
                 }
             };
@@ -279,7 +309,7 @@
             if (loading) return (
                 <div className="min-h-screen flex flex-col items-center justify-center bg-white">
                     <div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">A carregar...</p>
+                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">A carregar interface...</p>
                 </div>
             );
 
@@ -289,23 +319,31 @@
                         <AppLogo size={80} className="text-slate-900" />
                     </div>
                     <h1 className="text-3xl font-[900] text-slate-900 mb-2 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium leading-relaxed">Controle as suas faturas mensais de forma profissional.</p>
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium leading-relaxed">Organize as suas despesas mensais sem complicações.</p>
                     
-                    <button 
-                        onClick={(e) => {
-                            e.preventDefault();
-                            handleGoogleLogin();
-                        }} 
-                        className="w-full max-w-xs p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google"
-                    >
-                        <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" alt="Google" />
-                        Entrar com Google
-                    </button>
+                    <div className="w-full max-w-xs space-y-4">
+                        <button 
+                            onClick={handleGoogleLogin} 
+                            disabled={!fbReady}
+                            className="w-full p-5 rounded-2xl font-bold btn-google group"
+                        >
+                            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5 group-active:scale-90 transition-transform" alt="Google" />
+                            <span>Entrar com Google</span>
+                        </button>
 
-                    {loginError && <div className="mt-8 text-rose-500 text-xs font-bold uppercase">{loginError}</div>}
+                        {loginStatus && (
+                            <div className="p-3 bg-slate-50 rounded-xl text-[10px] font-bold text-slate-500 uppercase tracking-tight animate-pulse">
+                                {loginStatus}
+                            </div>
+                        )}
+                        
+                        {!fbReady && (
+                            <p className="text-[10px] text-rose-500 font-bold">Erro: Firebase não detetado.</p>
+                        )}
+                    </div>
                     
                     <div className="mt-20 opacity-20">
-                        <p className="text-[10px] font-black uppercase tracking-[0.2em]">Versão 2.5 Preview</p>
+                        <p className="text-[10px] font-black uppercase tracking-[0.2em]">Versão 2.6 Stable</p>
                     </div>
                 </div>
             );
@@ -315,7 +353,7 @@
                     <header className="px-6 pt-12 pb-6 flex justify-between items-center sticky top-0 bg-[#fcfcfd]/80 backdrop-blur-md z-40">
                         <div>
                             <h1 className="text-xl font-[900] text-slate-900 tracking-tight">Olá, {user.displayName?.split(' ')[0]}</h1>
-                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Gestão de Faturas</p>
+                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Painel Financeiro</p>
                         </div>
                         <button onClick={() => setView('profile')}>
                             <img src={user.photoURL} className="w-10 h-10 rounded-xl shadow-lg border-2 border-white" alt="Perfil" />
@@ -326,24 +364,24 @@
                         {view === 'home' && (
                             <>
                                 <div className="dark-card p-8 text-white">
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total em Falta</p>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total Pendente</p>
                                     <div className="flex items-baseline gap-1 mb-6">
                                         <h2 className="text-4xl font-[900]">{totalPendente.toFixed(2)}</h2>
                                         <span className="text-xl font-bold text-slate-400">€</span>
                                     </div>
                                     <div className="flex gap-4">
                                         <div className="bg-white/10 px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider">
-                                            {bills.length} Faturas
+                                            {bills.length} registos
                                         </div>
                                     </div>
                                 </div>
 
                                 <div className="space-y-4">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Próximas Contas</h3>
+                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Contas a Pagar</h3>
                                     {bills.filter(b => !b.paid).length === 0 ? (
                                         <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-[2rem]">
                                             <Icon name="check-circle" className="mx-auto text-slate-200 mb-2" size={32} />
-                                            <p className="text-slate-400 text-xs font-medium">Tudo pago por agora!</p>
+                                            <p className="text-slate-400 text-xs font-medium">Tudo em dia!</p>
                                         </div>
                                     ) : (
                                         bills.filter(b => !b.paid).map(bill => (
@@ -354,7 +392,7 @@
                                                     </div>
                                                     <div>
                                                         <p className="font-bold text-slate-900">{bill.name}</p>
-                                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Até {bill.due}</p>
+                                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Limite: {bill.due}</p>
                                                     </div>
                                                 </div>
                                                 <div className="flex items-center gap-3">
@@ -375,14 +413,14 @@
 
                         {view === 'stats' && (
                             <div className="bg-white p-6 rounded-[2rem] border border-slate-100">
-                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-6">Tendência de Gastos</h3>
+                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-6">Gráfico de Gastos</h3>
                                 <div className="h-[260px] w-full"><canvas ref={chartRef}></canvas></div>
                             </div>
                         )}
 
                         {view === 'list' && (
                             <div className="space-y-4">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Histórico Completo</h3>
+                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Histórico de Faturas</h3>
                                 {bills.map(bill => (
                                     <div key={bill.id} className={`bill-card p-4 flex items-center justify-between ${bill.paid ? 'opacity-50' : ''}`}>
                                         <div className="flex items-center gap-3">
@@ -412,7 +450,7 @@
                                     <p className="text-xs text-slate-400">{user.email}</p>
                                 </div>
                                 <button onClick={handleLogout} className="w-full bg-rose-50 text-rose-600 p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-colors hover:bg-rose-100">
-                                    <Icon name="log-out" size={18} /> Terminar Sessão
+                                    <Icon name="log-out" size={18} /> Sair da Aplicação
                                 </button>
                             </div>
                         )}
@@ -422,7 +460,7 @@
                         <nav className="w-full max-w-[320px] h-16 nav-glass rounded-full flex items-center justify-around shadow-xl border border-white/50">
                             <button onClick={() => setView('home')} className={`p-3 rounded-full transition-colors ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
                             <button onClick={() => setView('stats')} className={`p-3 rounded-full transition-colors ${view === 'stats' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
-                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd] active:scale-90 transition-transform"><Icon name="plus" /></button>
+                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd] active:scale-90 transition-transform shadow-lg"><Icon name="plus" /></button>
                             <button onClick={() => setView('list')} className={`p-3 rounded-full transition-colors ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="list" /></button>
                             <button onClick={() => setView('profile')} className={`p-3 rounded-full transition-colors ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="user" /></button>
                         </nav>
@@ -432,7 +470,7 @@
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-end">
                             <div className="bg-white w-full max-w-md mx-auto rounded-t-[2.5rem] p-8 fade-in">
                                 <div className="flex justify-between items-center mb-6">
-                                    <h2 className="font-black text-lg">Adicionar Fatura</h2>
+                                    <h2 className="font-black text-lg">Nova Despesa</h2>
                                     <button onClick={() => setShowModal(false)}><Icon name="x" className="text-slate-300" /></button>
                                 </div>
                                 <form onSubmit={async (e) => {
@@ -450,7 +488,7 @@
                                     });
                                     setShowModal(false);
                                 }} className="space-y-4">
-                                    <input name="name" placeholder="Serviço (ex: Vodafone)" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none" required />
+                                    <input name="name" placeholder="Nome do Serviço" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none" required />
                                     <select name="category" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-500 custom-select border-none">
                                         {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                                     </select>
@@ -458,7 +496,7 @@
                                         <input name="value" type="number" step="0.01" placeholder="Valor (€)" className="p-4 bg-slate-50 rounded-xl font-bold border-none" required />
                                         <input name="date" type="date" className="p-4 bg-slate-50 rounded-xl font-bold text-xs border-none" required />
                                     </div>
-                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100 active:scale-95 transition-transform mt-4">Registar Agora</button>
+                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100 active:scale-95 transition-transform mt-4">Gravar Fatura</button>
                                 </form>
                             </div>
                         </div>

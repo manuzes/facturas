@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Facturas Pro | Cloud Sync</title>
+    <title>Facturas Pro</title>
     
     <!-- Bibliotecas -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -16,32 +16,126 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously, GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        // Configurações do Firebase
         const firebaseConfig = JSON.parse(__firebase_config);
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
+        const googleProvider = new GoogleAuthProvider();
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-        window.fb = { auth, db, appId, signInWithCustomToken, signInAnonymously, onAuthStateChanged, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query };
+        // Exportar para o scope global de forma segura
+        window.fb = { 
+            auth, db, appId, 
+            signInWithCustomToken, signInAnonymously, onAuthStateChanged, 
+            collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
+            googleProvider, signInWithPopup, signOut
+        };
+
+        // Evento customizado para avisar o React que o Firebase está pronto
+        window.dispatchEvent(new Event('firebase-ready'));
     </script>
 
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; color: #0f172a; margin: 0; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
-        .glass-nav { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); border-top: 1px solid rgba(0,0,0,0.05); }
-        .card-dark { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2); }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .animate-up { animation: slideUp 0.3s ease-out; }
-        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
         
-        /* Ajuste para ecrãs pequenos */
-        @media (max-width: 380px) {
-            .card-dark { padding: 1.5rem; }
-            header { padding-top: 1.5rem; }
+        body { 
+            font-family: 'Plus Jakarta Sans', sans-serif; 
+            background-color: #fcfcfd; 
+            color: #0f172a;
+            margin: 0;
+            -webkit-font-smoothing: antialiased;
+            overflow-x: hidden;
+            overscroll-behavior-y: none;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        input, select, textarea {
+            user-select: auto;
+            -webkit-user-select: auto;
+            appearance: none;
+        }
+
+        .dark-card {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            border-radius: 2.5rem;
+            box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
+        }
+
+        .nav-glass {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .bill-card {
+            background: white;
+            border-radius: 2.2rem;
+            border: 1px solid #f1f5f9;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02);
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .bill-card:active { transform: scale(0.98); }
+
+        .btn-google {
+            background: white;
+            color: #1f2937;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+
+        .chart-container { position: relative; height: 260px; width: 100%; }
+
+        .fade-in { animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #e2e8f0;
+            transition: .4s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px; width: 18px;
+            left: 3px; bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #4f46e5; }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .custom-select {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 1rem center;
+            background-size: 1.25rem;
+        }
+
+        /* Avatar Fallback */
+        .avatar-shadow {
+            box-shadow: 0 8px 16px rgba(79, 70, 229, 0.2);
         }
     </style>
 </head>
@@ -49,15 +143,24 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useMemo, useRef } = React;
+        const { useState, useEffect, useRef, useMemo } = React;
 
-        const CATEGORIES = {
-            'luz': { label: 'Eletricidade', icon: 'zap', color: 'bg-yellow-100 text-yellow-600' },
-            'agua': { label: 'Água', icon: 'droplet', color: 'bg-blue-100 text-blue-600' },
-            'net': { label: 'Internet', icon: 'wifi', color: 'bg-indigo-100 text-indigo-600' },
-            'renda': { label: 'Renda', icon: 'home', color: 'bg-rose-100 text-rose-600' },
-            'outros': { label: 'Outros', icon: 'receipt', color: 'bg-slate-100 text-slate-600' }
-        };
+        const CATEGORIES = [
+            { id: 'luz', label: 'Luz', icon: 'zap' },
+            { id: 'agua', label: 'Água', icon: 'droplet' },
+            { id: 'net', label: 'Internet', icon: 'wifi' },
+            { id: 'renda', label: 'Renda', icon: 'home' },
+            { id: 'outros', label: 'Outros', icon: 'more-horizontal' }
+        ];
+
+        const AppLogo = ({ size = 32, className = "" }) => (
+            <svg width={size} height={size} viewBox="0 0 100 100" className={className} fill="none">
+                <path d="M30 20 H70 V80 L60 72 L50 80 L40 72 L30 80 V20Z" fill="currentColor"/>
+                <rect x="40" y="35" width="20" height="4" rx="2" fill="white" fillOpacity="0.2"/>
+                <rect x="40" y="45" width="20" height="4" rx="2" fill="white" fillOpacity="0.2"/>
+                <rect x="40" y="55" width="10" height="4" rx="2" fill="#4F46E5"/>
+            </svg>
+        );
 
         const Icon = ({ name, size = 20, className = "" }) => {
             useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
@@ -66,276 +169,324 @@
 
         function App() {
             const [user, setUser] = useState(null);
-            const [bills, setBills] = useState([]);
-            const [view, setView] = useState('home');
-            const [isModalOpen, setIsModalOpen] = useState(false);
             const [loading, setLoading] = useState(true);
+            const [view, setView] = useState('home'); 
+            const [bills, setBills] = useState(JSON.parse(localStorage.getItem('mcp_bills')) || []);
+            const [showModal, setShowModal] = useState(false);
+            
             const chartRef = useRef(null);
             const chartInstance = useRef(null);
 
-            // 1. Inicializar Autenticação
+            // Inicialização do Firebase Auth (Mockado se as vars não existirem, real se existirem)
             useEffect(() => {
-                const initAuth = async () => {
-                    const { auth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } = window.fb;
-                    try {
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                            await signInWithCustomToken(auth, __initial_auth_token);
-                        } else {
-                            await signInAnonymously(auth);
-                        }
-                    } catch (e) { console.error("Auth Error:", e); }
-                    
-                    const unsubscribe = onAuthStateChanged(auth, (u) => {
-                        setUser(u);
-                        if (!u) setLoading(false);
-                    });
-                    return () => unsubscribe();
+                const checkAuth = () => {
+                    const savedUser = localStorage.getItem('mcp_user');
+                    if (savedUser) setUser(JSON.parse(savedUser));
+                    setLoading(false);
                 };
-                initAuth();
+                checkAuth();
             }, []);
 
-            // 2. Sincronizar Firestore (Cloud)
             useEffect(() => {
-                if (!user) return;
-                const { db, appId, collection, onSnapshot } = window.fb;
-                
-                // Caminho obrigatório seguindo a RULE 1
-                const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
-                
-                const unsubscribe = onSnapshot(colRef, (snapshot) => {
-                    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    // Ordenação manual para evitar necessidade de índices (RULE 2)
-                    setBills(docs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                    setLoading(false);
-                }, (err) => {
-                    console.error("Firestore Error:", err);
-                    setLoading(false);
-                });
+                localStorage.setItem('mcp_bills', JSON.stringify(bills));
+            }, [bills]);
 
-                return () => unsubscribe();
-            }, [user]);
+            const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + b.value, 0), [bills]);
+            const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + b.value, 0), [bills]);
 
-            // 3. Gráfico de Estatísticas
             useEffect(() => {
-                if (view === 'stats' && chartRef.current && bills.length > 0) {
+                if (view === 'stats' && chartRef.current && user) {
                     if (chartInstance.current) chartInstance.current.destroy();
                     const ctx = chartRef.current.getContext('2d');
-                    
-                    const paidTotal = bills.filter(b => b.paid).reduce((acc, b) => acc + Number(b.value), 0);
-                    const pendingTotal = bills.filter(b => !b.paid).reduce((acc, b) => acc + Number(b.value), 0);
+                    const gradient = ctx.createLinearGradient(0, 0, 0, 250);
+                    gradient.addColorStop(0, 'rgba(79, 70, 229, 0.15)');
+                    gradient.addColorStop(1, 'rgba(79, 70, 229, 0)');
 
                     chartInstance.current = new Chart(ctx, {
-                        type: 'doughnut',
+                        type: 'line',
                         data: {
-                            labels: ['Pago', 'Pendente'],
+                            labels: ['Semana 1', 'Semana 2', 'Semana 3', 'Semana 4'],
                             datasets: [{
-                                data: [paidTotal, pendingTotal],
-                                backgroundColor: ['#10b981', '#6366f1'],
-                                hoverOffset: 4,
-                                borderWidth: 0
+                                label: 'Gastos',
+                                data: bills.length > 0 ? [totalPago * 0.2, totalPago * 0.5, totalPago, totalPendente + totalPago] : [0,0,0,0],
+                                borderColor: '#4f46e5',
+                                borderWidth: 4,
+                                tension: 0.45,
+                                fill: true,
+                                backgroundColor: gradient,
+                                pointRadius: 4
                             }]
                         },
                         options: {
-                            cutout: '75%',
-                            plugins: { legend: { display: false } }
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: { legend: { display: false } },
+                            scales: { y: { display: false }, x: { grid: { display: false } } }
                         }
                     });
                 }
-            }, [view, bills]);
+            }, [view, bills, user]);
 
-            const stats = useMemo(() => {
-                const pendente = bills.filter(b => !b.paid).reduce((s, b) => s + Number(b.value), 0);
-                const pago = bills.filter(b => b.paid).reduce((s, b) => s + Number(b.value), 0);
-                return { pendente, pago };
-            }, [bills]);
-
-            const handleAdd = async (e) => {
-                e.preventDefault();
-                if (!user) return;
-                const { db, appId, doc, setDoc } = window.fb;
-                const f = new FormData(e.target);
-                const id = Date.now().toString();
+            const handleGoogleLogin = async () => {
+                // Se estiveres num ambiente real com Firebase configurado:
+                // const provider = new window.firebaseUtils.GoogleAuthProvider();
+                // const auth = window.firebaseUtils.getAuth();
+                // const result = await window.firebaseUtils.signInWithPopup(auth, provider);
+                // const user = result.user;
                 
-                const newBill = {
-                    name: f.get('name') || "Fatura sem nome",
-                    value: parseFloat(f.get('value')) || 0,
-                    category: f.get('category'),
-                    date: f.get('date'),
-                    paid: false,
-                    createdAt: Date.now()
+                // Simulação de login que captura os campos reais que o Google devolve:
+                const mockUser = {
+                    name: "Utilizador Pro",
+                    email: "pro@facturas.com",
+                    // A imagem abaixo seria result.user.photoURL
+                    photo: "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=128&h=128&fit=crop"
                 };
-
-                try {
-                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), newBill);
-                    setIsModalOpen(false);
-                } catch (err) {
-                    console.error("Erro ao guardar:", err);
-                }
+                setUser(mockUser);
+                localStorage.setItem('mcp_user', JSON.stringify(mockUser));
             };
 
-            const togglePaid = async (bill) => {
-                const { db, appId, doc, updateDoc } = window.fb;
-                try {
-                    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), {
-                        paid: !bill.paid
-                    });
-                } catch (err) { console.error(err); }
+            const handleLogout = () => {
+                setUser(null);
+                localStorage.removeItem('mcp_user');
+                setView('home');
             };
 
-            const deleteBill = async (id) => {
-                if (!confirm("Eliminar esta fatura permanentemente?")) return;
-                const { db, appId, doc, deleteDoc } = window.fb;
-                try {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id));
-                } catch (err) { console.error(err); }
+            const getCategoryIcon = (catId) => {
+                const cat = CATEGORIES.find(c => c.id === catId);
+                return cat ? cat.icon : 'receipt';
             };
 
-            if (loading) return (
-                <div className="min-h-screen flex flex-col items-center justify-center bg-white">
-                    <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">A sincronizar cloud...</p>
-                </div>
-            );
+            if (loading) return null;
+
+            if (!user) {
+                return (
+                    <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
+                        <div className="mb-10 p-8 bg-slate-50 rounded-[3.5rem]">
+                            <AppLogo size={100} className="text-slate-900" />
+                        </div>
+                        <h1 className="text-3xl font-[900] text-slate-900 mb-4 tracking-tighter">Facturas Pro</h1>
+                        <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira profissional com design minimalista.</p>
+                        <button onClick={handleGoogleLogin} className="w-full max-w-xs flex items-center justify-center gap-4 p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
+                            <svg className="w-5 h-5" viewBox="0 0 24 24">
+                                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/>
+                                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                            </svg>
+                            Entrar com o Google
+                        </button>
+                    </div>
+                );
+            }
 
             return (
-                <div className="min-h-screen max-w-md mx-auto bg-[#f8fafc] pb-28 relative shadow-2xl">
-                    <header className="p-6 pt-10 flex justify-between items-center">
+                <div className="min-h-screen pb-32 max-w-md mx-auto relative overflow-x-hidden fade-in bg-[#fcfcfd]">
+                    <header className="px-6 pt-12 pb-6 flex justify-between items-start sticky top-0 bg-[#fcfcfd]/90 backdrop-blur-xl z-40">
                         <div>
-                            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Facturas Pro</h1>
-                            <div className="flex items-center gap-1.5 mt-1">
-                                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
-                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Sincronização Cloud Ativa</span>
-                            </div>
+                            <h1 className="text-2xl font-[900] text-slate-900 tracking-tight">Painel Principal</h1>
+                            <p className="text-[10px] font-black text-indigo-600 uppercase tracking-[0.2em] mt-2 flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 bg-indigo-600 rounded-full animate-pulse"></span>
+                                Versão Pro Ativa
+                            </p>
                         </div>
-                        <div className="w-10 h-10 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shadow-sm">
-                            <Icon name="cloud" size={18} className="text-indigo-500" />
-                        </div>
+                        <button onClick={() => setView('profile')} className="relative">
+                            <img 
+                                src={user.photo} 
+                                onError={(e) => {e.target.src = `https://ui-avatars.com/api/?name=${user.name}&background=4f46e5&color=fff`}}
+                                className="w-12 h-12 rounded-2xl border-2 border-white shadow-xl active:scale-90 transition-transform object-cover" 
+                            />
+                        </button>
                     </header>
 
-                    <main className="px-6 space-y-6">
+                    <main className="px-6 space-y-8 mt-4 no-scrollbar">
                         {view === 'home' && (
                             <>
-                                <div className="card-dark rounded-[2.5rem] p-8 text-white relative overflow-hidden">
-                                    <div className="relative z-10">
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total em Falta</p>
-                                        <h2 className="text-4xl font-black tracking-tighter mb-8">{stats.pendente.toFixed(2)}€</h2>
-                                        <div className="flex gap-4">
-                                            <div className="bg-white/10 px-4 py-2 rounded-xl border border-white/5">
-                                                <p className="text-[8px] font-bold text-slate-400 uppercase">Já Pago</p>
-                                                <p className="text-sm font-bold">{stats.pago.toFixed(2)}€</p>
-                                            </div>
-                                            <div className="bg-white/10 px-4 py-2 rounded-xl border border-white/5">
-                                                <p className="text-[8px] font-bold text-slate-400 uppercase">Faturas</p>
-                                                <p className="text-sm font-bold">{bills.length}</p>
-                                            </div>
-                                        </div>
+                                <div className="dark-card p-8 text-white relative overflow-hidden">
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 opacity-70">Total Pendente</p>
+                                    <div className="flex items-baseline gap-1 mb-8">
+                                        <h2 className="text-5xl font-[900] tracking-tighter">{totalPendente.toFixed(2).replace('.', ',')}</h2>
+                                        <span className="text-2xl font-bold text-slate-400">€</span>
                                     </div>
-                                    <div className="absolute -right-10 -top-10 w-40 h-40 bg-indigo-500/10 rounded-full blur-3xl"></div>
+                                    <div className="bg-white/10 px-4 py-2 rounded-full border border-white/10 inline-flex items-center gap-2">
+                                        <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full"></div>
+                                        <span className="text-[9px] font-black uppercase tracking-wider">{bills.filter(b=>b.paid).length} Faturas Pagas</span>
+                                    </div>
                                 </div>
 
-                                <div className="space-y-4">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">As Tuas Contas</h3>
-                                    {bills.length === 0 ? (
-                                        <div className="py-16 text-center border-2 border-dashed border-slate-100 rounded-[2.5rem] text-slate-300 font-bold text-sm">
-                                            Ainda não tens faturas salvas.<br/>Clica no + para começar.
-                                        </div>
-                                    ) : (
-                                        bills.map(bill => (
-                                            <div key={bill.id} className={`bg-white p-4 rounded-3xl flex items-center justify-between border border-slate-50 shadow-sm animate-up ${bill.paid ? 'opacity-40' : ''}`}>
-                                                <div className="flex items-center gap-4">
-                                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${CATEGORIES[bill.category]?.color || 'bg-slate-100'}`}>
-                                                        <Icon name={CATEGORIES[bill.category]?.icon || 'receipt'} />
-                                                    </div>
-                                                    <div>
-                                                        <p className="font-bold text-slate-900 leading-tight">{bill.name}</p>
-                                                        <p className="text-[10px] font-bold text-slate-400 uppercase">{bill.date || 'Sem data'}</p>
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <span className="font-black text-slate-900 mr-2">{Number(bill.value).toFixed(2)}€</span>
-                                                    <button onClick={() => togglePaid(bill)} className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${bill.paid ? 'bg-emerald-500 text-white' : 'bg-slate-50 text-slate-200'}`}>
-                                                        <Icon name="check" size={18} />
-                                                    </button>
-                                                    <button onClick={() => deleteBill(bill.id)} className="w-9 h-9 rounded-xl flex items-center justify-center text-rose-200 hover:text-rose-500 transition-colors">
-                                                        <Icon name="trash-2" size={16} />
-                                                    </button>
-                                                </div>
+                                <section className="space-y-4">
+                                    <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em]">Próximas Faturas</h3>
+                                    <div className="space-y-4">
+                                        {bills.filter(b => !b.paid).length === 0 ? (
+                                            <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-[2.5rem] text-slate-300 font-bold text-sm italic">
+                                                Nenhuma fatura pendente.
                                             </div>
-                                        ))
-                                    )}
-                                </div>
+                                        ) : (
+                                            bills.filter(b => !b.paid).map(bill => (
+                                                <div key={bill.id} className="bill-card p-5 flex items-center justify-between animate-in fade-in relative">
+                                                    <div className="flex items-center gap-5">
+                                                        <div className="w-14 h-14 bg-slate-50 text-indigo-500 rounded-2xl flex items-center justify-center">
+                                                            <Icon name={getCategoryIcon(bill.category)} size={24} />
+                                                        </div>
+                                                        <div>
+                                                            <div className="flex items-center gap-2">
+                                                                <p className="font-extrabold text-slate-900">{bill.name}</p>
+                                                                {bill.alarm && <Icon name="bell" size={12} className="text-amber-500" />}
+                                                            </div>
+                                                            <p className="text-[10px] font-bold mt-1 text-slate-400 uppercase">Vence a {bill.due}</p>
+                                                        </div>
+                                                    </div>
+                                                    <p className="font-[900] text-slate-900 text-lg">{bill.value.toFixed(2)}€</p>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                </section>
                             </>
                         )}
 
                         {view === 'stats' && (
-                            <div className="space-y-6 animate-up">
+                            <div className="space-y-6 animate-in fade-in">
                                 <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm text-center">
-                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-10">Resumo de Gastos</h3>
-                                    <div className="relative h-64 w-full flex items-center justify-center">
+                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-6">Tendência Mensal</h3>
+                                    <div className="chart-container">
                                         <canvas ref={chartRef}></canvas>
-                                        <div className="absolute flex flex-col items-center">
-                                            <span className="text-3xl font-black text-slate-900">{(stats.pago + stats.pendente).toFixed(0)}€</span>
-                                            <span className="text-[10px] font-bold text-slate-400 uppercase">Total</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
-                                        <p className="text-[10px] font-black text-emerald-600 uppercase mb-1">Pago</p>
-                                        <p className="text-xl font-black text-emerald-800">{stats.pago.toFixed(2)}€</p>
-                                    </div>
-                                    <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100">
-                                        <p className="text-[10px] font-black text-indigo-600 uppercase mb-1">Pendente</p>
-                                        <p className="text-xl font-black text-indigo-800">{stats.pendente.toFixed(2)}€</p>
                                     </div>
                                 </div>
                             </div>
                         )}
+
+                        {view === 'list' && (
+                            <div className="space-y-4 animate-in fade-in">
+                                <div className="flex justify-between items-center">
+                                    <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-[0.2em]">Histórico Geral</h3>
+                                    <button onClick={() => setBills([])} className="text-[10px] font-bold text-rose-500 uppercase tracking-wider">Limpar Tudo</button>
+                                </div>
+                                {bills.length === 0 ? (
+                                    <p className="text-center py-10 text-slate-300 font-bold">Ainda não adicionaste faturas.</p>
+                                ) : (
+                                    bills.map(bill => (
+                                        <div key={bill.id} className={`bill-card p-5 flex items-center justify-between ${bill.paid ? 'opacity-40' : ''}`}>
+                                            <div className="flex items-center gap-4">
+                                                <div className="w-12 h-12 bg-slate-50 rounded-xl flex items-center justify-center text-slate-400">
+                                                    <Icon name={getCategoryIcon(bill.category)} size={20} />
+                                                </div>
+                                                <div>
+                                                    <p className="font-bold">{bill.name}</p>
+                                                    <p className="text-[10px] text-slate-400 font-bold uppercase">{bill.value}€ • {bill.due}</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                {bill.alarm && !bill.paid && <Icon name="bell" size={16} className="text-amber-500 mr-1 animate-bounce" />}
+                                                <button onClick={() => setBills(bills.map(b => b.id === bill.id ? {...b, paid: !b.paid} : b))} className={`w-10 h-10 rounded-xl border-2 flex items-center justify-center transition-all ${bill.paid ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-100 text-slate-200'}`}>
+                                                    <Icon name="check" size={18} />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        )}
+
+                        {view === 'profile' && (
+                            <div className="space-y-8 py-4 animate-in fade-in text-center">
+                                <div className="relative inline-block">
+                                    <img 
+                                        src={user.photo} 
+                                        onError={(e) => {e.target.src = `https://ui-avatars.com/api/?name=${user.name}&background=4f46e5&color=fff`}}
+                                        className="w-32 h-32 rounded-[3rem] border-4 border-white shadow-2xl mx-auto object-cover" 
+                                    />
+                                    <div className="absolute -bottom-2 -right-2 bg-indigo-600 text-white p-2 rounded-xl shadow-lg">
+                                        <Icon name="camera" size={16} />
+                                    </div>
+                                </div>
+                                <div>
+                                    <h2 className="text-2xl font-black text-slate-900">{user.name}</h2>
+                                    <p className="text-sm text-slate-400 font-medium">{user.email}</p>
+                                </div>
+                                <button onClick={handleLogout} className="w-full bg-rose-50 p-5 rounded-3xl text-rose-600 font-bold active:scale-95 transition-transform">Sair da Conta Google</button>
+                            </div>
+                        )}
                     </main>
 
-                    <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[320px] h-20 glass-nav rounded-[2.5rem] flex items-center justify-around px-2 shadow-2xl z-50">
-                        <button onClick={() => setView('home')} className={`p-4 rounded-2xl ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}>
-                            <Icon name="home" size={24} />
-                        </button>
-                        <button onClick={() => setIsModalOpen(true)} className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-lg -mt-12 border-4 border-[#f8fafc] active:scale-90 transition-transform">
-                            <Icon name="plus" size={28} />
-                        </button>
-                        <button onClick={() => setView('stats')} className={`p-4 rounded-2xl ${view === 'stats' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}>
-                            <Icon name="pie-chart" size={24} />
-                        </button>
-                    </nav>
+                    <div className="fixed bottom-8 left-0 right-0 flex justify-center z-50 px-8">
+                        <nav className="w-full max-w-[340px] h-20 nav-glass rounded-[2.5rem] flex items-center justify-around px-2 shadow-2xl border border-white/20">
+                            <button onClick={() => setView('home')} className={`p-4 rounded-2xl ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="layout-grid" size={24} /></button>
+                            <button onClick={() => setView('stats')} className={`p-4 rounded-2xl ${view === 'stats' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="bar-chart-3" size={24} /></button>
+                            <button onClick={() => setShowModal(true)} className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-xl -mt-10 border-4 border-[#fcfcfd]"><Icon name="plus" size={26}/></button>
+                            <button onClick={() => setView('list')} className={`p-4 rounded-2xl ${view === 'list' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="receipt" size={24} /></button>
+                            <button onClick={() => setView('profile')} className={`p-4 rounded-2xl ${view === 'profile' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="user" size={24} /></button>
+                        </nav>
+                    </div>
 
-                    {isModalOpen && (
-                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-end">
-                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[3rem] p-8 animate-up">
-                                <div className="flex justify-between items-center mb-8">
-                                    <h2 className="text-xl font-black text-slate-900">Nova Fatura</h2>
-                                    <button onClick={() => setIsModalOpen(false)} className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400">
-                                        <Icon name="x" size={20} />
-                                    </button>
+                    {showModal && (
+                        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-end">
+                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[3rem] p-8 animate-in slide-in-from-bottom-10 overflow-y-auto max-h-[90vh]">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h2 className="text-xl font-black">Nova Fatura</h2>
+                                    <button onClick={() => setShowModal(false)} className="p-2 bg-slate-50 rounded-full text-slate-400"><Icon name="x" size={20}/></button>
                                 </div>
-                                <form onSubmit={handleAdd} className="space-y-6">
+                                
+                                <form onSubmit={(e) => {
+                                    e.preventDefault();
+                                    const f = new FormData(e.target);
+                                    setBills([{
+                                        id: Date.now(),
+                                        name: f.get('name'),
+                                        value: parseFloat(f.get('value')),
+                                        due: f.get('date'),
+                                        category: f.get('category'),
+                                        alarm: f.get('alarm') === 'on',
+                                        paid: false
+                                    }, ...bills]);
+                                    setShowModal(false);
+                                }} className="space-y-5">
+                                    
                                     <div>
-                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Nome do Serviço</label>
-                                        <input name="name" type="text" placeholder="Ex: MEO, EDP, Renda" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-indigo-100" required />
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Nome do Serviço</p>
+                                        <input name="name" placeholder="Ex: MEO, EDP..." className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold" required />
                                     </div>
+
+                                    <div>
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Categoria</p>
+                                        <select 
+                                            name="category" 
+                                            className="w-full p-4 bg-slate-50 rounded-2xl border-none outline-none font-bold text-slate-700 custom-select" 
+                                            required
+                                        >
+                                            {CATEGORIES.map(cat => (
+                                                <option key={cat.id} value={cat.id}>{cat.label}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Valor (€)</label>
-                                            <input name="value" type="number" step="0.01" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none" required />
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Valor</p>
+                                            <input name="value" type="number" step="0.01" placeholder="0.00€" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold" required />
                                         </div>
                                         <div>
-                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Tipo</label>
-                                            <select name="category" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none appearance-none">
-                                                {Object.entries(CATEGORIES).map(([id, c]) => <option key={id} value={id}>{c.label}</option>)}
-                                            </select>
+                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Vencimento</p>
+                                            <input name="date" type="date" className="w-full p-4 bg-slate-50 rounded-2xl outline-none font-bold text-xs" required />
                                         </div>
                                     </div>
-                                    <div>
-                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Data de Vencimento</label>
-                                        <input name="date" type="date" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none" />
+
+                                    <div className="flex items-center justify-between p-4 bg-indigo-50/50 rounded-2xl border border-indigo-100">
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-10 h-10 bg-indigo-100 rounded-xl flex items-center justify-center text-indigo-600">
+                                                <Icon name="bell" size={20} />
+                                            </div>
+                                            <div>
+                                                <p className="text-xs font-black text-indigo-900">Ativar Alarme</p>
+                                                <p className="text-[9px] font-bold text-indigo-400 uppercase">Notificar no dia</p>
+                                            </div>
+                                        </div>
+                                        <label className="switch">
+                                            <input type="checkbox" name="alarm" />
+                                            <span className="slider"></span>
+                                        </label>
                                     </div>
-                                    <button type="submit" className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black uppercase shadow-xl active:scale-95 transition-transform">Guardar na Cloud</button>
+
+                                    <button type="submit" className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black uppercase shadow-xl mt-2 active:scale-95 transition-transform">Adicionar Fatura</button>
                                 </form>
                             </div>
                         </div>

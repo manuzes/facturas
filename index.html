@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="pt-PT">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Facturas Pro | Cloud Sync</title>
+    
+    <!-- Bibliotecas -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@0.321.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Configurações do Firebase
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
+
+        window.fb = { auth, db, appId, signInWithCustomToken, signInAnonymously, onAuthStateChanged, collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query };
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800;900&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; color: #0f172a; margin: 0; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+        .glass-nav { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(15px); -webkit-backdrop-filter: blur(15px); border-top: 1px solid rgba(0,0,0,0.05); }
+        .card-dark { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2); }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .animate-up { animation: slideUp 0.3s ease-out; }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        
+        /* Ajuste para ecrãs pequenos */
+        @media (max-width: 380px) {
+            .card-dark { padding: 1.5rem; }
+            header { padding-top: 1.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const CATEGORIES = {
+            'luz': { label: 'Eletricidade', icon: 'zap', color: 'bg-yellow-100 text-yellow-600' },
+            'agua': { label: 'Água', icon: 'droplet', color: 'bg-blue-100 text-blue-600' },
+            'net': { label: 'Internet', icon: 'wifi', color: 'bg-indigo-100 text-indigo-600' },
+            'renda': { label: 'Renda', icon: 'home', color: 'bg-rose-100 text-rose-600' },
+            'outros': { label: 'Outros', icon: 'receipt', color: 'bg-slate-100 text-slate-600' }
+        };
+
+        const Icon = ({ name, size = 20, className = "" }) => {
+            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
+            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [bills, setBills] = useState([]);
+            const [view, setView] = useState('home');
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [loading, setLoading] = useState(true);
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
+
+            // 1. Inicializar Autenticação
+            useEffect(() => {
+                const initAuth = async () => {
+                    const { auth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } = window.fb;
+                    try {
+                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                            await signInWithCustomToken(auth, __initial_auth_token);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (e) { console.error("Auth Error:", e); }
+                    
+                    const unsubscribe = onAuthStateChanged(auth, (u) => {
+                        setUser(u);
+                        if (!u) setLoading(false);
+                    });
+                    return () => unsubscribe();
+                };
+                initAuth();
+            }, []);
+
+            // 2. Sincronizar Firestore (Cloud)
+            useEffect(() => {
+                if (!user) return;
+                const { db, appId, collection, onSnapshot } = window.fb;
+                
+                // Caminho obrigatório seguindo a RULE 1
+                const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
+                
+                const unsubscribe = onSnapshot(colRef, (snapshot) => {
+                    const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    // Ordenação manual para evitar necessidade de índices (RULE 2)
+                    setBills(docs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+                    setLoading(false);
+                }, (err) => {
+                    console.error("Firestore Error:", err);
+                    setLoading(false);
+                });
+
+                return () => unsubscribe();
+            }, [user]);
+
+            // 3. Gráfico de Estatísticas
+            useEffect(() => {
+                if (view === 'stats' && chartRef.current && bills.length > 0) {
+                    if (chartInstance.current) chartInstance.current.destroy();
+                    const ctx = chartRef.current.getContext('2d');
+                    
+                    const paidTotal = bills.filter(b => b.paid).reduce((acc, b) => acc + Number(b.value), 0);
+                    const pendingTotal = bills.filter(b => !b.paid).reduce((acc, b) => acc + Number(b.value), 0);
+
+                    chartInstance.current = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: ['Pago', 'Pendente'],
+                            datasets: [{
+                                data: [paidTotal, pendingTotal],
+                                backgroundColor: ['#10b981', '#6366f1'],
+                                hoverOffset: 4,
+                                borderWidth: 0
+                            }]
+                        },
+                        options: {
+                            cutout: '75%',
+                            plugins: { legend: { display: false } }
+                        }
+                    });
+                }
+            }, [view, bills]);
+
+            const stats = useMemo(() => {
+                const pendente = bills.filter(b => !b.paid).reduce((s, b) => s + Number(b.value), 0);
+                const pago = bills.filter(b => b.paid).reduce((s, b) => s + Number(b.value), 0);
+                return { pendente, pago };
+            }, [bills]);
+
+            const handleAdd = async (e) => {
+                e.preventDefault();
+                if (!user) return;
+                const { db, appId, doc, setDoc } = window.fb;
+                const f = new FormData(e.target);
+                const id = Date.now().toString();
+                
+                const newBill = {
+                    name: f.get('name') || "Fatura sem nome",
+                    value: parseFloat(f.get('value')) || 0,
+                    category: f.get('category'),
+                    date: f.get('date'),
+                    paid: false,
+                    createdAt: Date.now()
+                };
+
+                try {
+                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), newBill);
+                    setIsModalOpen(false);
+                } catch (err) {
+                    console.error("Erro ao guardar:", err);
+                }
+            };
+
+            const togglePaid = async (bill) => {
+                const { db, appId, doc, updateDoc } = window.fb;
+                try {
+                    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), {
+                        paid: !bill.paid
+                    });
+                } catch (err) { console.error(err); }
+            };
+
+            const deleteBill = async (id) => {
+                if (!confirm("Eliminar esta fatura permanentemente?")) return;
+                const { db, appId, doc, deleteDoc } = window.fb;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id));
+                } catch (err) { console.error(err); }
+            };
+
+            if (loading) return (
+                <div className="min-h-screen flex flex-col items-center justify-center bg-white">
+                    <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">A sincronizar cloud...</p>
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen max-w-md mx-auto bg-[#f8fafc] pb-28 relative shadow-2xl">
+                    <header className="p-6 pt-10 flex justify-between items-center">
+                        <div>
+                            <h1 className="text-2xl font-black text-slate-900 tracking-tight">Facturas Pro</h1>
+                            <div className="flex items-center gap-1.5 mt-1">
+                                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Sincronização Cloud Ativa</span>
+                            </div>
+                        </div>
+                        <div className="w-10 h-10 bg-white border border-slate-100 rounded-2xl flex items-center justify-center shadow-sm">
+                            <Icon name="cloud" size={18} className="text-indigo-500" />
+                        </div>
+                    </header>
+
+                    <main className="px-6 space-y-6">
+                        {view === 'home' && (
+                            <>
+                                <div className="card-dark rounded-[2.5rem] p-8 text-white relative overflow-hidden">
+                                    <div className="relative z-10">
+                                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total em Falta</p>
+                                        <h2 className="text-4xl font-black tracking-tighter mb-8">{stats.pendente.toFixed(2)}€</h2>
+                                        <div className="flex gap-4">
+                                            <div className="bg-white/10 px-4 py-2 rounded-xl border border-white/5">
+                                                <p className="text-[8px] font-bold text-slate-400 uppercase">Já Pago</p>
+                                                <p className="text-sm font-bold">{stats.pago.toFixed(2)}€</p>
+                                            </div>
+                                            <div className="bg-white/10 px-4 py-2 rounded-xl border border-white/5">
+                                                <p className="text-[8px] font-bold text-slate-400 uppercase">Faturas</p>
+                                                <p className="text-sm font-bold">{bills.length}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="absolute -right-10 -top-10 w-40 h-40 bg-indigo-500/10 rounded-full blur-3xl"></div>
+                                </div>
+
+                                <div className="space-y-4">
+                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">As Tuas Contas</h3>
+                                    {bills.length === 0 ? (
+                                        <div className="py-16 text-center border-2 border-dashed border-slate-100 rounded-[2.5rem] text-slate-300 font-bold text-sm">
+                                            Ainda não tens faturas salvas.<br/>Clica no + para começar.
+                                        </div>
+                                    ) : (
+                                        bills.map(bill => (
+                                            <div key={bill.id} className={`bg-white p-4 rounded-3xl flex items-center justify-between border border-slate-50 shadow-sm animate-up ${bill.paid ? 'opacity-40' : ''}`}>
+                                                <div className="flex items-center gap-4">
+                                                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${CATEGORIES[bill.category]?.color || 'bg-slate-100'}`}>
+                                                        <Icon name={CATEGORIES[bill.category]?.icon || 'receipt'} />
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-bold text-slate-900 leading-tight">{bill.name}</p>
+                                                        <p className="text-[10px] font-bold text-slate-400 uppercase">{bill.date || 'Sem data'}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-black text-slate-900 mr-2">{Number(bill.value).toFixed(2)}€</span>
+                                                    <button onClick={() => togglePaid(bill)} className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${bill.paid ? 'bg-emerald-500 text-white' : 'bg-slate-50 text-slate-200'}`}>
+                                                        <Icon name="check" size={18} />
+                                                    </button>
+                                                    <button onClick={() => deleteBill(bill.id)} className="w-9 h-9 rounded-xl flex items-center justify-center text-rose-200 hover:text-rose-500 transition-colors">
+                                                        <Icon name="trash-2" size={16} />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </>
+                        )}
+
+                        {view === 'stats' && (
+                            <div className="space-y-6 animate-up">
+                                <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm text-center">
+                                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-10">Resumo de Gastos</h3>
+                                    <div className="relative h-64 w-full flex items-center justify-center">
+                                        <canvas ref={chartRef}></canvas>
+                                        <div className="absolute flex flex-col items-center">
+                                            <span className="text-3xl font-black text-slate-900">{(stats.pago + stats.pendente).toFixed(0)}€</span>
+                                            <span className="text-[10px] font-bold text-slate-400 uppercase">Total</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
+                                        <p className="text-[10px] font-black text-emerald-600 uppercase mb-1">Pago</p>
+                                        <p className="text-xl font-black text-emerald-800">{stats.pago.toFixed(2)}€</p>
+                                    </div>
+                                    <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100">
+                                        <p className="text-[10px] font-black text-indigo-600 uppercase mb-1">Pendente</p>
+                                        <p className="text-xl font-black text-indigo-800">{stats.pendente.toFixed(2)}€</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    <nav className="fixed bottom-8 left-1/2 -translate-x-1/2 w-[320px] h-20 glass-nav rounded-[2.5rem] flex items-center justify-around px-2 shadow-2xl z-50">
+                        <button onClick={() => setView('home')} className={`p-4 rounded-2xl ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}>
+                            <Icon name="home" size={24} />
+                        </button>
+                        <button onClick={() => setIsModalOpen(true)} className="w-14 h-14 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-lg -mt-12 border-4 border-[#f8fafc] active:scale-90 transition-transform">
+                            <Icon name="plus" size={28} />
+                        </button>
+                        <button onClick={() => setView('stats')} className={`p-4 rounded-2xl ${view === 'stats' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}>
+                            <Icon name="pie-chart" size={24} />
+                        </button>
+                    </nav>
+
+                    {isModalOpen && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[100] flex items-end">
+                            <div className="bg-white w-full max-w-md mx-auto rounded-t-[3rem] p-8 animate-up">
+                                <div className="flex justify-between items-center mb-8">
+                                    <h2 className="text-xl font-black text-slate-900">Nova Fatura</h2>
+                                    <button onClick={() => setIsModalOpen(false)} className="w-10 h-10 bg-slate-100 rounded-full flex items-center justify-center text-slate-400">
+                                        <Icon name="x" size={20} />
+                                    </button>
+                                </div>
+                                <form onSubmit={handleAdd} className="space-y-6">
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Nome do Serviço</label>
+                                        <input name="name" type="text" placeholder="Ex: MEO, EDP, Renda" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none border-2 border-transparent focus:border-indigo-100" required />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Valor (€)</label>
+                                            <input name="value" type="number" step="0.01" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none" required />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Tipo</label>
+                                            <select name="category" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none appearance-none">
+                                                {Object.entries(CATEGORIES).map(([id, c]) => <option key={id} value={id}>{c.label}</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-2 px-1">Data de Vencimento</label>
+                                        <input name="date" type="date" className="w-full p-4 bg-slate-50 rounded-2xl font-bold outline-none" />
+                                    </div>
+                                    <button type="submit" className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black uppercase shadow-xl active:scale-95 transition-transform">Guardar na Cloud</button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

@@ -16,7 +16,7 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, onAuthStateChanged, signInWithCustomToken, signInAnonymously, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signInWithCustomToken, GoogleAuthProvider, signInWithPopup, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         const initFirebase = async () => {
@@ -32,13 +32,14 @@
 
                 window.fb = { 
                     auth, db, appId, 
-                    signInWithCustomToken, signInAnonymously, onAuthStateChanged, 
+                    signInWithCustomToken, onAuthStateChanged, 
                     collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
                     googleProvider, signInWithPopup, signOut
                 };
                 window.dispatchEvent(new Event('firebase-ready'));
             } catch (e) {
                 console.error("Firebase Init Error:", e);
+                window.dispatchEvent(new Event('firebase-error'));
             }
         };
 
@@ -150,21 +151,34 @@
 
             useEffect(() => {
                 const handleReady = () => setFbReady(true);
+                const handleError = () => {
+                    setFbReady(false);
+                    setLoading(false);
+                };
                 window.addEventListener('firebase-ready', handleReady);
-                return () => window.removeEventListener('firebase-ready', handleReady);
+                window.addEventListener('firebase-error', handleError);
+                return () => {
+                    window.removeEventListener('firebase-ready', handleReady);
+                    window.removeEventListener('firebase-error', handleError);
+                };
             }, []);
 
             useEffect(() => {
                 if (!fbReady) return;
-                const { auth, onAuthStateChanged, signInWithCustomToken, signInAnonymously } = window.fb;
+                
+                const { auth, onAuthStateChanged, signInWithCustomToken } = window.fb;
                 
                 const unsubscribe = onAuthStateChanged(auth, async (u) => {
-                    if (u && !u.isAnonymous) {
+                    // Verificamos se o utilizador acabou de fazer logout manualmente
+                    const manualLogout = localStorage.getItem('manual_logout') === 'true';
+
+                    if (u) {
                         setUser(u);
                         setLoading(false);
+                        localStorage.removeItem('manual_logout');
                     } else {
-                        // Tentar login com token se existir, senão limpa o loading
-                        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        // Se não houver utilizador e NÃO foi logout manual, tenta o token automático
+                        if (!manualLogout && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                             try {
                                 await signInWithCustomToken(auth, __initial_auth_token);
                             } catch (e) {
@@ -189,36 +203,28 @@
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => console.error("Firestore error:", err));
+                }, (err) => console.error(err));
                 
                 return () => unsubscribe();
             }, [user, fbReady]);
 
             const handleGoogleLogin = async () => {
-                if (!fbReady) {
-                    setLoginError("O sistema ainda está a carregar. Tente novamente em segundos.");
-                    return;
-                }
-                
+                if (!fbReady) return;
                 const { auth, googleProvider, signInWithPopup } = window.fb;
                 setLoginError(null);
-                
                 try { 
-                    const result = await signInWithPopup(auth, googleProvider);
-                    if (result.user) setUser(result.user);
+                    localStorage.removeItem('manual_logout');
+                    await signInWithPopup(auth, googleProvider);
                 } catch (e) { 
-                    console.error("Login Error:", e);
-                    if (e.code === 'auth/popup-blocked') {
-                        setLoginError("O navegador bloqueou a janela de login. Permita pop-ups.");
-                    } else {
-                        setLoginError("O sistema ainda está a carregar. Tente novamente em segundos.");
-                    }
+                    setLoginError("Erro ao entrar. Tente novamente.");
                 }
             };
 
             const handleLogout = async () => {
                 if (!fbReady) return;
                 const { auth, signOut } = window.fb;
+                // Marcamos que o logout foi intencional
+                localStorage.setItem('manual_logout', 'true');
                 await signOut(auth);
                 setUser(null);
                 setView('home');
@@ -274,11 +280,7 @@
                         Entrar com Google
                     </button>
 
-                    {loginError && (
-                        <div className="mt-8 bg-rose-50 text-rose-500 text-sm font-medium p-6 rounded-3xl max-w-xs leading-relaxed border border-rose-100">
-                            {loginError}
-                        </div>
-                    )}
+                    {loginError && <div className="mt-8 text-rose-500 text-sm font-medium">{loginError}</div>}
                 </div>
             );
 
@@ -334,11 +336,6 @@
                                             </div>
                                         </div>
                                     ))}
-                                    {bills.filter(b => !b.paid).length === 0 && (
-                                        <div className="text-center py-12">
-                                            <p className="text-slate-300 text-xs font-bold uppercase tracking-widest">Tudo em dia!</p>
-                                        </div>
-                                    )}
                                 </div>
                             </>
                         )}
@@ -416,7 +413,7 @@
                                     });
                                     setShowModal(false);
                                 }} className="space-y-4">
-                                    <input name="name" placeholder="Nome do Serviço" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-indigo-100" required />
+                                    <input name="name" placeholder="Nome do Serviço" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none" required />
                                     <select name="category" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-500 custom-select border-none">
                                         {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                                     </select>

@@ -27,7 +27,7 @@
             const googleProvider = new GoogleAuthProvider();
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
 
-            // Configurar persistência
+            // Configurar persistência para manter a sessão
             setPersistence(auth, browserLocalPersistence);
 
             window.fb = { 
@@ -81,39 +81,20 @@
             color: #1f2937;
             border: 1px solid #e5e7eb;
             box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            cursor: pointer;
         }
+
+        .btn-google:hover { background-color: #f9fafb; }
+        .btn-google:active { transform: scale(0.97); }
 
         .chart-container { position: relative; height: 260px; width: 100%; }
 
         .fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 44px;
-            height: 24px;
-        }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-color: #e2e8f0;
-            transition: .4s;
-            border-radius: 24px;
-        }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 18px; width: 18px;
-            left: 3px; bottom: 3px;
-            background-color: white;
-            transition: .4s;
-            border-radius: 50%;
-        }
-        input:checked + .slider { background-color: #4f46e5; }
-        input:checked + .slider:before { transform: translateX(20px); }
 
         .custom-select {
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
@@ -155,6 +136,7 @@
             const [fbReady, setFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
             const [loading, setLoading] = useState(true);
+            const [loginError, setLoginError] = useState(null);
             const [view, setView] = useState('home'); 
             const [bills, setBills] = useState([]);
             const [showModal, setShowModal] = useState(false);
@@ -166,10 +148,10 @@
                 const handleReady = () => setFbReady(true);
                 window.addEventListener('firebase-ready', handleReady);
                 
-                // Timeout de segurança para não ficar em loading eterno
+                // Timeout para garantir que o utilizador não fica preso se o firebase falhar
                 const timer = setTimeout(() => {
-                    if (loading) setLoading(false);
-                }, 4000);
+                    setLoading(false);
+                }, 3000);
 
                 return () => {
                     window.removeEventListener('firebase-ready', handleReady);
@@ -183,7 +165,6 @@
                 const { auth, onAuthStateChanged, signInWithCustomToken } = window.fb;
                 
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
-                    // Só permitimos utilizadores reais (Google), não anónimos
                     if (u && !u.isAnonymous) {
                         setUser(u);
                     } else {
@@ -192,7 +173,6 @@
                     setLoading(false);
                 });
 
-                // Tentar autenticação por token se disponível
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     signInWithCustomToken(auth, __initial_auth_token).catch(() => setLoading(false));
                 }
@@ -200,7 +180,7 @@
                 return () => unsubscribe();
             }, [fbReady]);
 
-            // 3. Ouvir Dados (Firestore)
+            // 3. Ouvir Dados
             useEffect(() => {
                 if (!user || !fbReady) return;
                 const { db, appId, collection, onSnapshot, query } = window.fb;
@@ -209,22 +189,31 @@
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => {
-                    console.error("Firestore Error:", err);
-                });
+                }, (err) => console.error(err));
                 
                 return () => unsubscribe();
             }, [user, fbReady]);
 
             const handleGoogleLogin = async () => {
-                if (!fbReady) return;
+                if (!fbReady) {
+                    setLoginError("O sistema ainda está a carregar. Tente novamente em segundos.");
+                    return;
+                }
+                
                 const { auth, googleProvider, signInWithPopup } = window.fb;
+                setLoginError(null);
+                setLoading(true);
+                
                 try { 
-                    setLoading(true);
                     await signInWithPopup(auth, googleProvider);
                 } catch (e) { 
-                    console.error("Login Error:", e); 
+                    console.error("Login Error:", e);
                     setLoading(false);
+                    if (e.code === 'auth/popup-blocked') {
+                        setLoginError("O seu navegador bloqueou a janela de login. Por favor, permita pop-ups.");
+                    } else {
+                        setLoginError("Ocorreu um erro ao tentar entrar. Tente novamente.");
+                    }
                 }
             };
 
@@ -235,11 +224,9 @@
                 setView('home');
             };
 
-            // Helpers de Dados
             const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
             const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
 
-            // Renderização do Gráfico
             useEffect(() => {
                 if (view === 'stats' && chartRef.current && bills.length > 0) {
                     if (chartInstance.current) chartInstance.current.destroy();
@@ -270,7 +257,7 @@
             if (loading) return (
                 <div className="min-h-screen flex flex-col items-center justify-center bg-white">
                     <div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                    <p className="text-slate-400 font-bold text-xs uppercase tracking-widest">A ligar...</p>
+                    <p className="text-slate-400 font-bold text-[10px] uppercase tracking-widest">Sincronizando...</p>
                 </div>
             );
 
@@ -280,11 +267,16 @@
                         <AppLogo size={80} className="text-slate-900" />
                     </div>
                     <h1 className="text-3xl font-[900] text-slate-900 mb-2 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira pessoal com autenticação segura Google.</p>
-                    <button onClick={handleGoogleLogin} className="w-full max-w-xs flex items-center justify-center gap-4 p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Gestão financeira pessoal segura e automatizada.</p>
+                    
+                    <button onClick={handleGoogleLogin} className="w-full max-w-xs p-5 rounded-2xl font-bold transition-all active:scale-95 btn-google">
                         <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/action/google.svg" className="w-5 h-5" />
                         Entrar com Google
                     </button>
+
+                    {loginError && (
+                        <p className="mt-6 text-rose-500 text-xs font-bold bg-rose-50 p-4 rounded-xl max-w-xs">{loginError}</p>
+                    )}
                 </div>
             );
 
@@ -294,7 +286,7 @@
                     <header className="px-6 pt-12 pb-6 flex justify-between items-center sticky top-0 bg-[#fcfcfd]/80 backdrop-blur-md z-40">
                         <div>
                             <h1 className="text-xl font-[900] text-slate-900 tracking-tight">Olá, {user.displayName?.split(' ')[0]}</h1>
-                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Sessão Ativa</p>
+                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Gestão Ativa</p>
                         </div>
                         <button onClick={() => setView('profile')}>
                             <img src={user.photoURL} className="w-10 h-10 rounded-xl shadow-lg border-2 border-white" />
@@ -305,20 +297,20 @@
                         {view === 'home' && (
                             <>
                                 <div className="dark-card p-8 text-white">
-                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Pendente</p>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total Pendente</p>
                                     <div className="flex items-baseline gap-1 mb-6">
                                         <h2 className="text-4xl font-[900]">{totalPendente.toFixed(2)}</h2>
                                         <span className="text-xl font-bold text-slate-400">€</span>
                                     </div>
                                     <div className="flex gap-4">
                                         <div className="bg-white/10 px-3 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider">
-                                            {bills.length} Total
+                                            {bills.length} Registos
                                         </div>
                                     </div>
                                 </div>
 
                                 <div className="space-y-4">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Faturas Próximas</h3>
+                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Próximos Pagamentos</h3>
                                     {bills.filter(b => !b.paid).map(bill => (
                                         <div key={bill.id} className="bill-card p-5 flex items-center justify-between">
                                             <div className="flex items-center gap-4">
@@ -335,19 +327,24 @@
                                                 <button onClick={async () => {
                                                     const { db, appId, doc, updateDoc } = window.fb;
                                                     await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), { paid: true });
-                                                }} className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-200 hover:text-emerald-500">
+                                                }} className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-300 hover:text-emerald-500 transition-colors">
                                                     <Icon name="check" size={16} />
                                                 </button>
                                             </div>
                                         </div>
                                     ))}
+                                    {bills.filter(b => !b.paid).length === 0 && (
+                                        <div className="text-center py-12">
+                                            <p className="text-slate-300 text-xs font-bold uppercase tracking-widest">Tudo em dia!</p>
+                                        </div>
+                                    )}
                                 </div>
                             </>
                         )}
 
                         {view === 'stats' && (
                             <div className="bg-white p-6 rounded-[2rem] border border-slate-100">
-                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-6">Gastos Acumulados</h3>
+                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-6">Tendência de Gastos</h3>
                                 <div className="chart-container"><canvas ref={chartRef}></canvas></div>
                             </div>
                         )}
@@ -365,7 +362,7 @@
                                             <button onClick={async () => {
                                                 const { db, appId, doc, deleteDoc } = window.fb;
                                                 await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
-                                            }} className="text-rose-200"><Icon name="trash-2" size={14}/></button>
+                                            }} className="text-rose-200 hover:text-rose-500"><Icon name="trash-2" size={14}/></button>
                                         </div>
                                     </div>
                                 ))}
@@ -379,8 +376,8 @@
                                     <h2 className="text-xl font-black">{user.displayName}</h2>
                                     <p className="text-xs text-slate-400">{user.email}</p>
                                 </div>
-                                <button onClick={handleLogout} className="w-full bg-rose-50 text-rose-600 p-4 rounded-2xl font-bold flex items-center justify-center gap-2">
-                                    <Icon name="log-out" size={18} /> Sair
+                                <button onClick={handleLogout} className="w-full bg-rose-50 text-rose-600 p-4 rounded-2xl font-bold flex items-center justify-center gap-2 transition-colors hover:bg-rose-100">
+                                    <Icon name="log-out" size={18} /> Sair da Conta
                                 </button>
                             </div>
                         )}
@@ -389,11 +386,11 @@
                     {/* Navbar */}
                     <div className="fixed bottom-6 left-0 right-0 flex justify-center px-6 z-50">
                         <nav className="w-full max-w-[320px] h-16 nav-glass rounded-full flex items-center justify-around shadow-xl">
-                            <button onClick={() => setView('home')} className={`p-3 rounded-full ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
-                            <button onClick={() => setView('stats')} className={`p-3 rounded-full ${view === 'stats' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
-                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd]"><Icon name="plus" /></button>
-                            <button onClick={() => setView('list')} className={`p-3 rounded-full ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="list" /></button>
-                            <button onClick={() => setView('profile')} className={`p-3 rounded-full ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="user" /></button>
+                            <button onClick={() => setView('home')} className={`p-3 rounded-full transition-colors ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
+                            <button onClick={() => setView('stats')} className={`p-3 rounded-full transition-colors ${view === 'stats' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
+                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd] active:scale-90 transition-transform"><Icon name="plus" /></button>
+                            <button onClick={() => setView('list')} className={`p-3 rounded-full transition-colors ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="list" /></button>
+                            <button onClick={() => setView('profile')} className={`p-3 rounded-full transition-colors ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="user" /></button>
                         </nav>
                     </div>
 
@@ -420,15 +417,15 @@
                                     });
                                     setShowModal(false);
                                 }} className="space-y-4">
-                                    <input name="name" placeholder="Serviço" className="w-full p-4 bg-slate-50 rounded-xl font-bold" required />
-                                    <select name="category" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-500 custom-select">
+                                    <input name="name" placeholder="Nome do Serviço" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none focus:ring-2 focus:ring-indigo-100" required />
+                                    <select name="category" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-500 custom-select border-none">
                                         {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                                     </select>
                                     <div className="grid grid-cols-2 gap-4">
-                                        <input name="value" type="number" step="0.01" placeholder="Valor €" className="p-4 bg-slate-50 rounded-xl font-bold" required />
-                                        <input name="date" type="date" className="p-4 bg-slate-50 rounded-xl font-bold text-xs" required />
+                                        <input name="value" type="number" step="0.01" placeholder="Valor (€)" className="p-4 bg-slate-50 rounded-xl font-bold border-none" required />
+                                        <input name="date" type="date" className="p-4 bg-slate-50 rounded-xl font-bold text-xs border-none" required />
                                     </div>
-                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100">Guardar</button>
+                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100 active:scale-95 transition-transform mt-4">Guardar Fatura</button>
                                 </form>
                             </div>
                         </div>

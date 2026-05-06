@@ -27,21 +27,23 @@
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        const initFirebase = async () => {
+        async function startApp() {
             try {
-                if (typeof __firebase_config === 'undefined') {
-                    await new Promise(r => setTimeout(r, 1000));
+                const configStr = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
+                if (!configStr) {
+                    console.warn("A aguardar configuração...");
+                    setTimeout(startApp, 500);
+                    return;
                 }
 
-                const firebaseConfig = JSON.parse(__firebase_config);
+                const firebaseConfig = JSON.parse(configStr);
                 const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
-                
-                await setPersistence(auth, browserLocalPersistence);
                 const db = getFirestore(app);
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-default';
 
-                // Função de autenticação compatível para evitar erro de domínio
+                await setPersistence(auth, browserLocalPersistence);
+
                 const authenticate = async () => {
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                         return await signInWithCustomToken(auth, __initial_auth_token);
@@ -55,15 +57,14 @@
                     collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
                     signOut, authenticate
                 };
+                
                 window.dispatchEvent(new Event('firebase-ready'));
             } catch (e) {
-                console.error("Erro Init:", e);
-                window.dispatchEvent(new Event('firebase-error'));
+                console.error("Erro Crítico Firebase:", e);
             }
-        };
+        }
 
-        window.addEventListener('load', initFirebase);
-        if (document.readyState === 'complete') initFirebase();
+        window.addEventListener('load', startApp);
     </script>
 
     <style>
@@ -75,6 +76,7 @@
             color: #0f172a;
             margin: 0;
             overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
         }
 
         .dark-card {
@@ -109,9 +111,6 @@
             transition: all 0.2s;
         }
 
-        .btn-main:hover { transform: translateY(-2px); }
-        .btn-main:active { transform: scale(0.97); }
-
         .custom-select {
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
             background-repeat: no-repeat;
@@ -122,6 +121,8 @@
 
         .fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
+        input:focus, select:focus { outline: 2px solid #4f46e5; }
     </style>
 </head>
 <body>
@@ -138,22 +139,12 @@
             { id: 'outros', label: 'Outros', icon: 'more-horizontal' }
         ];
 
-        const AppLogo = ({ size = 32, className = "" }) => (
-            <svg width={size} height={size} viewBox="0 0 100 100" className={className} fill="none">
-                <path d="M30 20 H70 V80 L60 72 L50 80 L40 72 L30 80 V20Z" fill="currentColor"/>
-                <rect x="40" y="35" width="20" height="4" rx="2" fill="white" fillOpacity="0.2"/>
-                <rect x="40" y="45" width="20" height="4" rx="2" fill="white" fillOpacity="0.2"/>
-                <rect x="40" y="55" width="10" height="4" rx="2" fill="#4F46E5"/>
-            </svg>
-        );
-
         const Icon = ({ name, size = 20, className = "" }) => {
             useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
             return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
         };
 
         function App() {
-            const [fbReady, setFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
             const [loading, setLoading] = useState(true);
             const [view, setView] = useState('home'); 
@@ -163,32 +154,39 @@
             const chartInstance = useRef(null);
 
             useEffect(() => {
-                const handleReady = () => setFbReady(true);
-                window.addEventListener('firebase-ready', handleReady);
-                const timer = setInterval(() => { if (window.fb) { setFbReady(true); clearInterval(timer); } }, 500);
-                return () => { window.removeEventListener('firebase-ready', handleReady); clearInterval(timer); };
+                const init = () => {
+                    if (window.fb) {
+                        const { auth, onAuthStateChanged } = window.fb;
+                        onAuthStateChanged(auth, (u) => {
+                            setUser(u);
+                            setLoading(false);
+                        });
+                    }
+                };
+
+                window.addEventListener('firebase-ready', init);
+                if (window.fb) init();
+
+                // Timeout de segurança para não ficar pendurado no loading para sempre
+                const safety = setTimeout(() => setLoading(false), 3000);
+                return () => {
+                    window.removeEventListener('firebase-ready', init);
+                    clearTimeout(safety);
+                };
             }, []);
 
             useEffect(() => {
-                if (!fbReady || !window.fb) return;
-                const { auth, onAuthStateChanged } = window.fb;
-                const unsubscribe = onAuthStateChanged(auth, (u) => {
-                    setUser(u);
-                    setLoading(false);
-                });
-                return () => unsubscribe();
-            }, [fbReady]);
-
-            useEffect(() => {
-                if (!user || !fbReady || !window.fb) return;
+                if (!user || !window.fb) return;
                 const { db, appId, collection, onSnapshot } = window.fb;
                 const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
+                
                 const unsubscribe = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => console.error(err));
+                }, (err) => console.error("Firestore error:", err));
+                
                 return () => unsubscribe();
-            }, [user, fbReady]);
+            }, [user]);
 
             const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
             const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
@@ -200,9 +198,9 @@
                     chartInstance.current = new Chart(ctx, {
                         type: 'line',
                         data: {
-                            labels: ['Passado', 'Atual'],
+                            labels: ['Anterior', 'Atual'],
                             datasets: [{
-                                data: [totalPago * 0.8, totalPago + totalPendente],
+                                data: [totalPago * 0.7, totalPago + totalPendente],
                                 borderColor: '#4f46e5',
                                 borderWidth: 4,
                                 tension: 0.4,
@@ -221,21 +219,25 @@
             }, [view, totalPendente, totalPago, bills.length]);
 
             if (loading) return (
-                <div className="min-h-screen flex items-center justify-center bg-white">
-                    <div className="w-8 h-8 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin"></div>
+                <div className="min-h-screen flex flex-col items-center justify-center bg-white">
+                    <div className="w-10 h-10 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin"></div>
+                    <p className="mt-4 text-[10px] font-black text-slate-300 uppercase tracking-widest">A carregar...</p>
                 </div>
             );
 
             if (!user) return (
                 <div className="min-h-screen bg-white flex flex-col items-center justify-center p-8 text-center fade-in">
-                    <div className="mb-10 p-8 bg-slate-50 rounded-[3.5rem]">
-                        <AppLogo size={80} className="text-slate-900" />
+                    <div className="mb-10 w-24 h-24 bg-slate-900 rounded-[2.5rem] flex items-center justify-center text-white shadow-2xl">
+                        <Icon name="receipt" size={40} />
                     </div>
                     <h1 className="text-3xl font-[900] text-slate-900 mb-2 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-12 max-w-[260px] font-medium">Controle as suas faturas de forma privada e segura.</p>
-                    <button onClick={() => window.fb.authenticate()} className="w-full max-w-xs p-5 rounded-2xl font-bold btn-main">
-                        <Icon name="log-in" size={20} />
-                        <span>Entrar na Aplicação</span>
+                    <p className="text-slate-400 text-sm mb-12 max-w-[260px]">A sua gestão financeira pessoal, simples e segura.</p>
+                    <button 
+                        onClick={() => window.fb && window.fb.authenticate()} 
+                        className="w-full max-w-xs p-5 rounded-2xl font-bold btn-main"
+                    >
+                        <Icon name="zap" size={20} />
+                        <span>Entrar Agora</span>
                     </button>
                 </div>
             );
@@ -244,20 +246,18 @@
                 <div className="min-h-screen pb-32 max-w-md mx-auto bg-[#fcfcfd] fade-in">
                     <header className="px-6 pt-12 pb-6 flex justify-between items-center">
                         <div>
-                            <h1 className="text-xl font-[900] text-slate-900">Olá, Utilizador</h1>
-                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Painel de Controlo</p>
+                            <h1 className="text-xl font-[900] text-slate-900">Resumo Mensal</h1>
+                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Dashboard Ativo</p>
                         </div>
-                        <button onClick={() => setView('profile')}>
-                            <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-900 border-2 border-white shadow-sm">
-                                <Icon name="user" size={18} />
-                            </div>
+                        <button onClick={() => setView('profile')} className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-900 border-2 border-white shadow-sm">
+                            <Icon name="user" size={18} />
                         </button>
                     </header>
 
                     <main className="px-6 space-y-8 mt-4">
                         {view === 'home' && (
                             <>
-                                <div className="dark-card p-8 text-white">
+                                <div className="dark-card p-8 text-white relative overflow-hidden">
                                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total Pendente</p>
                                     <div className="flex items-baseline gap-1 mb-6">
                                         <h2 className="text-4xl font-[900]">{totalPendente.toFixed(2)}</h2>
@@ -265,59 +265,83 @@
                                     </div>
                                     <div className="inline-flex items-center gap-2 bg-white/10 px-3 py-1 rounded-full">
                                         <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-pulse"></div>
-                                        <span className="text-[10px] font-bold uppercase tracking-wide">{bills.filter(b=>!b.paid).length} faturas abertas</span>
+                                        <span className="text-[10px] font-bold uppercase tracking-wide">{bills.filter(b=>!b.paid).length} faturas por pagar</span>
                                     </div>
+                                    <Icon name="wallet" size={120} className="absolute -bottom-6 -right-6 opacity-5" />
                                 </div>
 
                                 <div className="space-y-4">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">A PAGAR</h3>
-                                    {bills.filter(b => !b.paid).map(bill => (
-                                        <div key={bill.id} className="bill-card p-5 flex items-center justify-between">
-                                            <div className="flex items-center gap-4">
-                                                <div className="w-12 h-12 bg-slate-50 text-indigo-600 rounded-xl flex items-center justify-center">
-                                                    <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={20} />
-                                                </div>
-                                                <div>
-                                                    <p className="font-bold text-sm text-slate-900">{bill.name}</p>
-                                                    <p className="text-[10px] font-bold text-slate-400 uppercase">Limite: {bill.due}</p>
-                                                </div>
-                                            </div>
-                                            <div className="flex items-center gap-3">
-                                                <p className="font-black text-slate-900">{Number(bill.value).toFixed(2)}€</p>
-                                                <button onClick={async () => {
-                                                    const { db, appId, doc, updateDoc } = window.fb;
-                                                    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), { paid: true });
-                                                }} className="w-8 h-8 bg-slate-50 rounded-lg flex items-center justify-center text-slate-300 hover:text-emerald-500">
-                                                    <Icon name="check" size={16} />
-                                                </button>
-                                            </div>
+                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">PRÓXIMOS PAGAMENTOS</h3>
+                                    {bills.filter(b => !b.paid).length === 0 ? (
+                                        <div className="py-12 text-center border-2 border-dashed border-slate-100 rounded-[2.5rem]">
+                                            <p className="text-xs font-bold text-slate-300 uppercase">Tudo em dia!</p>
                                         </div>
-                                    ))}
+                                    ) : (
+                                        bills.filter(b => !b.paid).map(bill => (
+                                            <div key={bill.id} className="bill-card p-5 flex items-center justify-between fade-in">
+                                                <div className="flex items-center gap-4">
+                                                    <div className="w-12 h-12 bg-slate-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                                                        <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={20} />
+                                                    </div>
+                                                    <div>
+                                                        <p className="font-bold text-sm text-slate-900">{bill.name}</p>
+                                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Vence: {bill.due}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex items-center gap-3">
+                                                    <p className="font-black text-slate-900">{Number(bill.value).toFixed(2)}€</p>
+                                                    <button onClick={async () => {
+                                                        const { db, appId, doc, updateDoc } = window.fb;
+                                                        await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), { paid: true });
+                                                    }} className="w-9 h-9 bg-slate-50 rounded-xl flex items-center justify-center text-slate-300 hover:text-emerald-500 transition-colors">
+                                                        <Icon name="check" size={18} />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
                                 </div>
                             </>
                         )}
 
                         {view === 'stats' && (
-                            <div className="bg-white p-6 rounded-[2.5rem] border border-slate-100 fade-in">
-                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-8">Fluxo de Gastos</h3>
+                            <div className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm fade-in">
+                                <h3 className="text-center text-[10px] font-black text-slate-400 uppercase mb-8">Análise de Fluxo</h3>
                                 <div className="h-[280px] w-full"><canvas ref={chartRef}></canvas></div>
+                                <div className="mt-8 grid grid-cols-2 gap-4">
+                                    <div className="bg-slate-50 p-4 rounded-2xl">
+                                        <p className="text-[9px] font-black text-slate-400 uppercase">Pago</p>
+                                        <p className="text-lg font-black text-emerald-600">{totalPago.toFixed(2)}€</p>
+                                    </div>
+                                    <div className="bg-slate-50 p-4 rounded-2xl">
+                                        <p className="text-[9px] font-black text-slate-400 uppercase">Em falta</p>
+                                        <p className="text-lg font-black text-rose-600">{totalPendente.toFixed(2)}€</p>
+                                    </div>
+                                </div>
                             </div>
                         )}
 
                         {view === 'list' && (
                             <div className="space-y-4 fade-in">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">HISTÓRICO</h3>
+                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">HISTÓRICO COMPLETO</h3>
                                 {bills.map(bill => (
                                     <div key={bill.id} className={`bill-card p-4 flex items-center justify-between ${bill.paid ? 'opacity-50' : ''}`}>
                                         <div className="flex items-center gap-3">
-                                            <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={18} className="text-slate-400" />
-                                            <p className="font-bold text-sm">{bill.name}</p>
+                                            <div className="p-2 rounded-lg bg-slate-100 text-slate-400">
+                                                <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={16} />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-sm">{bill.name}</p>
+                                                <p className="text-[9px] font-black uppercase text-slate-400">{bill.paid ? 'Liquidado' : 'Aberto'}</p>
+                                            </div>
                                         </div>
                                         <div className="flex items-center gap-4">
                                             <span className="font-black text-sm">{Number(bill.value).toFixed(2)}€</span>
                                             <button onClick={async () => {
                                                 const { db, appId, doc, deleteDoc } = window.fb;
-                                                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
+                                                if(confirm("Eliminar esta fatura?")) {
+                                                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
+                                                }
                                             }} className="text-rose-200 hover:text-rose-500 p-2">
                                                 <Icon name="trash-2" size={14}/>
                                             </button>
@@ -328,34 +352,46 @@
                         )}
 
                         {view === 'profile' && (
-                            <div className="text-center py-8 space-y-6 fade-in">
-                                <div className="w-24 h-24 bg-slate-100 rounded-[2.5rem] mx-auto flex items-center justify-center text-slate-900 shadow-xl border-4 border-white">
+                            <div className="text-center py-8 space-y-8 fade-in">
+                                <div className="w-24 h-24 bg-slate-100 rounded-[2.5rem] mx-auto flex items-center justify-center text-slate-900 border-4 border-white shadow-xl">
                                     <Icon name="user" size={40} />
                                 </div>
-                                <h2 className="text-xl font-black">Conta Privada</h2>
-                                <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-rose-50 text-rose-600 p-5 rounded-2xl font-bold flex items-center justify-center gap-2">
-                                    <Icon name="log-out" size={18} /> Sair da Aplicação
-                                </button>
+                                <div>
+                                    <h2 className="text-xl font-black">Conta Protegida</h2>
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">Sincronização em Nuvem Ativa</p>
+                                </div>
+                                <div className="pt-4">
+                                    <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-rose-50 text-rose-600 p-5 rounded-2xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-transform">
+                                        <Icon name="log-out" size={18} /> Sair da Aplicação
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </main>
 
+                    {/* Navegação de 5 Botões */}
                     <div className="fixed bottom-6 left-0 right-0 flex justify-center px-6 z-50">
-                        <nav className="w-full max-w-[320px] h-16 nav-glass rounded-full flex items-center justify-around shadow-xl border border-white/50">
-                            <button onClick={() => setView('home')} className={`p-3 rounded-full ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="home" /></button>
-                            <button onClick={() => setView('stats')} className={`p-3 rounded-full ${view === 'stats' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
-                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-8 border-4 border-[#fcfcfd] active:scale-90 transition-transform"><Icon name="plus" /></button>
-                            <button onClick={() => setView('list')} className={`p-3 rounded-full ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="list" /></button>
-                            <button onClick={() => setView('profile')} className={`p-3 rounded-full ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="user" /></button>
+                        <nav className="w-full max-w-[340px] h-16 nav-glass rounded-full flex items-center justify-around shadow-2xl border border-white/50">
+                            <button onClick={() => setView('home')} className={`p-3 transition-all ${view === 'home' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}><Icon name="home" /></button>
+                            <button onClick={() => setView('stats')} className={`p-3 transition-all ${view === 'stats' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}><Icon name="bar-chart-2" /></button>
+                            
+                            <button onClick={() => setShowModal(true)} className="w-12 h-12 bg-slate-900 text-white rounded-full flex items-center justify-center -mt-10 border-4 border-[#fcfcfd] shadow-xl active:scale-90 transition-transform">
+                                <Icon name="plus" />
+                            </button>
+                            
+                            <button onClick={() => setView('list')} className={`p-3 transition-all ${view === 'list' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}><Icon name="list" /></button>
+                            <button onClick={() => setView('profile')} className={`p-3 transition-all ${view === 'profile' ? 'text-indigo-600 scale-110' : 'text-slate-300'}`}><Icon name="user" /></button>
                         </nav>
                     </div>
 
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-end">
-                            <div className="bg-white w-full rounded-t-[2.5rem] p-8 animate-in slide-in-from-bottom duration-300">
-                                <div className="flex justify-between items-center mb-6">
-                                    <h2 className="font-black text-lg">Nova Fatura</h2>
-                                    <button onClick={() => setShowModal(false)}><Icon name="x" className="text-slate-300" /></button>
+                            <div className="bg-white w-full rounded-t-[3rem] p-8 animate-in slide-in-from-bottom duration-300">
+                                <div className="flex justify-between items-center mb-8">
+                                    <h2 className="font-[900] text-xl tracking-tight">Nova Fatura</h2>
+                                    <button onClick={() => setShowModal(false)} className="w-10 h-10 bg-slate-50 rounded-full flex items-center justify-center">
+                                        <Icon name="x" className="text-slate-400" />
+                                    </button>
                                 </div>
                                 <form onSubmit={async (e) => {
                                     e.preventDefault();
@@ -364,7 +400,7 @@
                                     const id = "bill_" + Date.now();
                                     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), {
                                         name: f.get('name'),
-                                        value: f.get('value'),
+                                        value: Number(f.get('value')),
                                         category: f.get('category'),
                                         due: f.get('date'),
                                         paid: false,
@@ -372,15 +408,27 @@
                                     });
                                     setShowModal(false);
                                 }} className="space-y-4">
-                                    <input name="name" placeholder="Descrição" className="w-full p-4 bg-slate-50 rounded-xl font-bold border-none" required />
-                                    <select name="category" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-500 custom-select border-none">
-                                        {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                                    </select>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <input name="value" type="number" step="0.01" placeholder="Valor (€)" className="p-4 bg-slate-50 rounded-xl font-bold border-none" required />
-                                        <input name="date" type="date" className="p-4 bg-slate-50 rounded-xl font-bold text-xs border-none" required />
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Descrição</label>
+                                        <input name="name" placeholder="Ex: Vodafone, Renda..." className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none" required />
                                     </div>
-                                    <button type="submit" className="w-full bg-indigo-600 text-white p-4 rounded-xl font-black uppercase tracking-widest shadow-lg shadow-indigo-100 mt-4">Registar Agora</button>
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Categoria</label>
+                                        <select name="category" className="w-full p-4 bg-slate-50 rounded-2xl font-bold text-slate-500 custom-select border-none">
+                                            {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Valor (€)</label>
+                                            <input name="value" type="number" step="0.01" placeholder="0.00" className="w-full p-4 bg-slate-50 rounded-2xl font-bold border-none" required />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[10px] font-black text-slate-400 uppercase ml-1">Vencimento</label>
+                                            <input name="date" type="date" className="w-full p-4 bg-slate-50 rounded-2xl font-bold text-xs border-none" required />
+                                        </div>
+                                    </div>
+                                    <button type="submit" className="w-full bg-indigo-600 text-white p-5 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-indigo-100 active:scale-95 transition-transform mt-6">Gravar Fatura</button>
                                 </form>
                             </div>
                         </div>

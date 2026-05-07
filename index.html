@@ -7,7 +7,7 @@
     
     <!-- PWA Meta Tags -->
     <meta name="theme-color" content="#4f46e5">
-    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Facturas Pro">
     
@@ -19,41 +19,35 @@
     <script src="https://unpkg.com/lucide@0.321.0"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
-    <!-- Firebase SDK -->
+    <!-- Firebase SDK - Carregamento Síncrono das Funções Essenciais -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { 
-            getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, 
-            signInWithCustomToken, signInAnonymously
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, onAuthStateChanged, signOut, setPersistence, browserLocalPersistence, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
-        const initFirebase = async () => {
-            try {
-                const firebaseConfig = JSON.parse(__firebase_config);
-                const app = initializeApp(firebaseConfig);
-                const auth = getAuth(app);
-                const db = getFirestore(app);
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-app';
+        // Inicialização Imediata
+        try {
+            const firebaseConfig = JSON.parse(__firebase_config);
+            const app = initializeApp(firebaseConfig);
+            const auth = getAuth(app);
+            const db = getFirestore(app);
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-app';
 
-                await setPersistence(auth, browserLocalPersistence);
-
-                // Disponibilizar globalmente de forma segura
-                window.fb = { 
-                    auth, db, appId, onAuthStateChanged, 
-                    collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
-                    signOut, signInAnonymously, signInWithCustomToken
-                };
-                
-                window.dispatchEvent(new CustomEvent('firebase-ready'));
-            } catch (e) {
-                console.error("Erro Crítico Firebase:", e);
-                window.fb_init_error = true;
-                window.dispatchEvent(new CustomEvent('firebase-ready'));
-            }
-        };
-
-        window.addEventListener('load', initFirebase);
+            // Disponibilizar globalmente
+            window.fb = { 
+                auth, db, appId, onAuthStateChanged, 
+                collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
+                signOut, signInAnonymously, signInWithCustomToken
+            };
+            
+            // Garantir persistência
+            setPersistence(auth, browserLocalPersistence);
+            
+            console.log("Firebase Global Initialized");
+            window.dispatchEvent(new CustomEvent('fb-init-complete'));
+        } catch (e) {
+            console.error("Erro na inicialização do Firebase:", e);
+        }
     </script>
 
     <style>
@@ -68,6 +62,7 @@
             position: fixed; 
             width: 100%; 
             height: 100%; 
+            -webkit-tap-highlight-color: transparent;
         }
         #root { height: 100%; overflow-y: auto; -webkit-overflow-scrolling: touch; }
         .card-premium { background: #ffffff; border: 1px solid #f1f5f9; border-radius: 2rem; }
@@ -79,18 +74,19 @@
         .status-pending { background: #fef9c3; color: #a16207; border: 1px solid #fef08a; }
         .fade-in { animation: fadeIn 0.4s ease-out forwards; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Correção específica para o botão "+" */
+        .fab-button {
+            z-index: 99;
+            cursor: pointer !important;
+            pointer-events: auto !important;
+            touch-action: manipulation;
+        }
         .btn-active:active { transform: scale(0.95); }
-        .custom-select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 1rem center; background-size: 1.2rem; }
     </style>
 </head>
 <body>
-    <div id="root">
-        <!-- Loader inicial enquanto o Firebase/React não carregam -->
-        <div style="height: 100vh; display: flex; align-items: center; justify-content: center; background: white;">
-            <div style="width: 40px; height: 40px; border: 4px solid #f3f4f6; border-top-color: #4f46e5; border-radius: 50%; animation: spin 1s linear infinite;"></div>
-        </div>
-    </div>
-    <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+    <div id="root"></div>
 
     <script type="text/babel">
         const { useState, useEffect, useRef, useMemo } = React;
@@ -120,50 +116,60 @@
         };
 
         function App() {
+            const [isFbReady, setIsFbReady] = useState(!!window.fb);
             const [user, setUser] = useState(null);
             const [userData, setUserData] = useState({ avatar: 'user', name: '' });
             const [bills, setBills] = useState([]);
             const [view, setView] = useState('home');
             const [showModal, setShowModal] = useState(false);
-            const [searchQuery, setSearchQuery] = useState('');
             const [filterMonth, setFilterMonth] = useState(new Date().toISOString().substring(0, 7));
             const [chartType, setChartType] = useState('categories');
-            const [copySuccess, setCopySuccess] = useState(null);
             
             const chartCanvasRef = useRef(null);
             const chartInstance = useRef(null);
 
-            // 1. Ouvir o Firebase Ready
+            // Sincronização com Firebase Ready
             useEffect(() => {
-                const handleReady = () => {
+                const checkReady = () => {
                     if (window.fb) {
-                        window.fb.onAuthStateChanged(window.fb.auth, (u) => {
-                            setUser(u);
-                        });
+                        setIsFbReady(true);
+                        const unsubscribe = window.fb.onAuthStateChanged(window.fb.auth, (u) => setUser(u));
+                        return unsubscribe;
                     }
                 };
-
-                if (window.fb) handleReady();
-                else window.addEventListener('firebase-ready', handleReady);
                 
-                return () => window.removeEventListener('firebase-ready', handleReady);
+                let unsubAuth;
+                if (window.fb) {
+                    unsubAuth = checkReady();
+                } else {
+                    window.addEventListener('fb-init-complete', () => {
+                        unsubAuth = checkReady();
+                    });
+                }
+                return () => unsubAuth && unsubAuth();
             }, []);
 
             const handleStart = async () => {
-                if (!window.fb) return;
+                if (!window.fb) {
+                    console.error("Firebase ainda não carregou");
+                    return;
+                }
                 try {
+                    const { auth, signInWithCustomToken, signInAnonymously } = window.fb;
                     if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                        await window.fb.signInWithCustomToken(window.fb.auth, __initial_auth_token);
+                        await signInWithCustomToken(auth, __initial_auth_token);
                     } else {
-                        await window.fb.signInAnonymously(window.fb.auth);
+                        await signInAnonymously(auth);
                     }
-                } catch (e) { console.error(e); }
+                } catch (e) { 
+                    console.error("Erro no Login:", e); 
+                }
             };
 
-            // 2. Fetch de Dados
+            // Fetch de Dados
             useEffect(() => {
                 if (!user || !window.fb) return;
-                const { db, appId, collection, onSnapshot, doc, query } = window.fb;
+                const { db, appId, collection, onSnapshot, doc } = window.fb;
                 
                 const unsubBills = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'bills'), (snap) => {
                     setBills(snap.docs.map(d => ({ id: d.id, ...d.data() })));
@@ -176,20 +182,7 @@
                 return () => { unsubBills(); unsubProfile(); };
             }, [user]);
 
-            // 3. Cálculos
-            const stats = useMemo(() => {
-                const currentMonthStr = new Date().toISOString().substring(0, 7);
-                const monthBills = bills.filter(b => b.due && b.due.startsWith(currentMonthStr));
-                const today = new Date().setHours(0,0,0,0);
-                
-                return {
-                    paidTotal: monthBills.filter(b => b.paid).reduce((acc, b) => acc + Number(b.value || 0), 0),
-                    pendingTotal: bills.filter(b => !b.paid).reduce((acc, b) => acc + Number(b.value || 0), 0),
-                    overdueCount: bills.filter(b => !b.paid && b.due && new Date(b.due) < today).length
-                };
-            }, [bills]);
-
-            // 4. Gráficos
+            // Gráficos
             useEffect(() => {
                 if (view === 'dashboard' && user && bills.length > 0) {
                     const timer = setTimeout(() => {
@@ -216,7 +209,6 @@
                                 options: { cutout: '75%', plugins: { legend: { display: false } }, maintainAspectRatio: false }
                             });
                         } else {
-                            // Lógica de Histórico Simplificada
                             const months = [5,4,3,2,1,0].map(i => {
                                 const d = new Date(); d.setMonth(d.getMonth() - i);
                                 return d.toISOString().substring(0, 7);
@@ -236,6 +228,18 @@
                     return () => clearTimeout(timer);
                 }
             }, [view, bills, chartType, user]);
+
+            const stats = useMemo(() => {
+                const currentMonthStr = new Date().toISOString().substring(0, 7);
+                const monthBills = bills.filter(b => b.due && b.due.startsWith(currentMonthStr));
+                const today = new Date().setHours(0,0,0,0);
+                
+                return {
+                    paidTotal: monthBills.filter(b => b.paid).reduce((acc, b) => acc + Number(b.value || 0), 0),
+                    pendingTotal: bills.filter(b => !b.paid).reduce((acc, b) => acc + Number(b.value || 0), 0),
+                    overdueCount: bills.filter(b => !b.paid && b.due && new Date(b.due) < today).length
+                };
+            }, [bills]);
 
             const getStatus = (bill) => {
                 if (bill.paid) return { label: 'Pago', class: 'status-paid' };
@@ -268,13 +272,15 @@
                 setShowModal(false);
             };
 
+            if (!isFbReady) return <div className="h-screen flex items-center justify-center bg-white"><div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div></div>;
+
             if (!user) {
                 return (
                     <div className="h-screen flex items-center justify-center bg-white p-10 text-center">
                         <div className="space-y-6 fade-in max-w-xs">
                             <div className="w-20 h-20 bg-indigo-50 rounded-3xl flex items-center justify-center mx-auto text-indigo-600"><Icon name="wallet" size={40} /></div>
                             <h1 className="text-3xl font-black text-slate-900 tracking-tight">Facturas Pro</h1>
-                            <p className="text-slate-500 text-sm">Organiza as tuas despesas mensais num só lugar.</p>
+                            <p className="text-slate-500 text-sm">A carregar o seu gestor financeiro pessoal...</p>
                             <button onClick={handleStart} className="w-full gradient-main text-white p-5 rounded-2xl font-bold shadow-lg shadow-indigo-200 active:scale-95 transition-all">Entrar na App</button>
                         </div>
                     </div>
@@ -282,7 +288,7 @@
             }
 
             return (
-                <div className="min-h-screen pb-32 max-w-md mx-auto bg-[#fcfcfd] relative flex flex-col font-medium overflow-hidden">
+                <div className="min-h-screen pb-32 max-w-md mx-auto bg-[#fcfcfd] relative flex flex-col font-medium">
                     
                     <header className="px-6 pt-12 pb-6 flex justify-between items-center sticky top-0 bg-[#fcfcfd]/80 backdrop-blur-xl z-50">
                         <div>
@@ -299,7 +305,7 @@
                         </button>
                     </header>
 
-                    <main className="px-6 space-y-8 flex-1 overflow-y-auto">
+                    <main className="px-6 space-y-8 flex-1">
                         {view === 'home' && (
                             <div className="space-y-8 fade-in">
                                 <div className="grid grid-cols-2 gap-4">
@@ -418,12 +424,19 @@
                             <button onClick={() => setView('home')} className={`p-4 ${view === 'home' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="layout-dashboard" size={22} /></button>
                             <button onClick={() => setView('dashboard')} className={`p-4 ${view === 'dashboard' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="pie-chart" size={22} /></button>
                             
-                            <button 
-                                onClick={() => setShowModal(true)} 
-                                className="w-16 h-16 bg-slate-900 text-white rounded-[2rem] flex items-center justify-center shadow-2xl -translate-y-5 border-4 border-[#fcfcfd] active:scale-90 transition-transform cursor-pointer"
-                            >
-                                <Icon name="plus" size={32} />
-                            </button>
+                            <div className="relative">
+                                <button 
+                                    onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        console.log("Clicou no +");
+                                        setShowModal(true);
+                                    }} 
+                                    className="fab-button w-16 h-16 bg-slate-900 text-white rounded-[2rem] flex items-center justify-center shadow-2xl -translate-y-5 border-4 border-[#fcfcfd] active:scale-90 transition-transform"
+                                >
+                                    <Icon name="plus" size={32} />
+                                </button>
+                            </div>
                             
                             <button onClick={() => setView('list')} className={`p-4 ${view === 'list' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="calendar-days" size={22} /></button>
                             <button onClick={() => setView('profile')} className={`p-4 ${view === 'profile' ? 'text-indigo-600' : 'text-slate-300'}`}><Icon name="settings" size={22} /></button>
@@ -444,7 +457,7 @@
                                         <input name="value" type="number" step="0.01" placeholder="Valor (€)" className="w-full p-5 bg-slate-50 rounded-2xl font-bold" required />
                                         <input name="date" type="date" className="w-full p-5 bg-slate-50 rounded-2xl font-bold" required />
                                     </div>
-                                    <select name="category" className="w-full p-5 bg-slate-50 rounded-2xl font-bold custom-select">
+                                    <select name="category" className="w-full p-5 bg-slate-50 rounded-2xl font-bold appearance-none bg-no-repeat bg-[right_1.5rem_center]" style={{backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")`, backgroundSize: '1.2rem'}}>
                                         {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                                     </select>
                                     <button type="submit" className="w-full gradient-main text-white p-6 rounded-[2rem] font-black uppercase tracking-widest shadow-xl">Guardar Fatura</button>

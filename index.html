@@ -11,49 +11,34 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@0.321.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { 
             getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, 
-            signInWithRedirect, getRedirectResult, signOut, setPersistence, 
-            browserLocalPersistence 
+            signOut, setPersistence, browserLocalPersistence, signInWithCustomToken, signInAnonymously 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         const initFirebase = async () => {
             try {
-                // Verificação segura das variáveis globais injetadas pelo ambiente
-                const rawConfig = typeof __firebase_config !== 'undefined' ? __firebase_config : null;
-                
-                if (!rawConfig) {
-                    throw new Error("Configuração do Firebase não encontrada no ambiente.");
-                }
-
-                const config = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
-                const app = initializeApp(config);
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = initializeApp(firebaseConfig);
                 const auth = getAuth(app);
                 const db = getFirestore(app);
-                const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-v1';
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'facturas-pro-final';
 
                 await setPersistence(auth, browserLocalPersistence);
 
-                try {
-                    const result = await getRedirectResult(auth);
-                    if (result?.user) console.log("Login sucesso");
-                } catch (reErr) {
-                    if (reErr.code === 'auth/unauthorized-domain') {
-                        window.dispatchEvent(new CustomEvent('auth-error', { 
-                            detail: 'Domínio não autorizado no Firebase.' 
-                        }));
-                    }
-                }
-                
                 const authenticate = async () => {
                     const provider = new GoogleAuthProvider();
-                    provider.setCustomParameters({ prompt: 'select_account' });
-                    return await signInWithRedirect(auth, provider);
+                    try {
+                        return await signInWithPopup(auth, provider);
+                    } catch (err) {
+                        return await signInAnonymously(auth);
+                    }
                 };
 
                 window.fb = { 
@@ -64,8 +49,7 @@
                 
                 window.dispatchEvent(new CustomEvent('firebase-ready'));
             } catch (e) {
-                console.error("Erro Crítico Firebase:", e);
-                window.fb_init_error = e.message;
+                window.fb_init_error = true;
                 window.dispatchEvent(new CustomEvent('firebase-ready'));
             }
         };
@@ -85,7 +69,7 @@
             -webkit-tap-highlight-color: transparent;
         }
 
-        .dark-card {
+        .premium-gradient-card {
             background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
             border-radius: 2.5rem;
             box-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
@@ -100,27 +84,22 @@
 
         .bill-card {
             background: white;
-            border-radius: 2.2rem;
+            border-radius: 2rem;
             border: 1px solid #f1f5f9;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: all 0.2s ease;
         }
 
         .btn-google {
             background: #0f172a;
             color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            cursor: pointer;
-            transition: all 0.2s;
             box-shadow: 0 10px 20px rgba(15, 23, 42, 0.1);
         }
 
-        .btn-google:hover { transform: translateY(-2px); box-shadow: 0 15px 30px rgba(15, 23, 42, 0.15); }
-        .btn-google:active { transform: scale(0.95); }
-        .btn-google:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-        
+        .chart-container {
+            height: 200px;
+            width: 100%;
+        }
+
         .custom-select {
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
             background-repeat: no-repeat;
@@ -131,6 +110,7 @@
 
         .fade-in { animation: fadeIn 0.4s ease-out; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        
         ::-webkit-scrollbar { display: none; }
     </style>
 </head>
@@ -141,27 +121,21 @@
         const { useState, useEffect, useRef, useMemo } = React;
 
         const CATEGORIES = [
-            { id: 'luz', label: 'Luz', icon: 'zap' },
-            { id: 'agua', label: 'Água', icon: 'droplet' },
-            { id: 'net', label: 'Internet', icon: 'wifi' },
-            { id: 'renda', label: 'Renda', icon: 'home' },
-            { id: 'outros', label: 'Outros', icon: 'more-horizontal' }
+            { id: 'luz', label: 'Eletricidade', icon: 'zap', color: '#EAB308' },
+            { id: 'agua', label: 'Água', icon: 'droplet', color: '#3B82F6' },
+            { id: 'net', label: 'Internet', icon: 'wifi', color: '#6366F1' },
+            { id: 'renda', label: 'Habitação', icon: 'home', color: '#10B981' },
+            { id: 'outros', label: 'Outros', icon: 'more-horizontal', color: '#64748B' }
         ];
 
         const Icon = ({ name, size = 20, className = "" }) => {
             const iconRef = useRef(null);
             useEffect(() => {
                 if (window.lucide && iconRef.current) {
-                    iconRef.current.innerHTML = '';
-                    const i = document.createElement('i');
-                    i.setAttribute('data-lucide', name);
-                    i.style.width = `${size}px`;
-                    i.style.height = `${size}px`;
-                    iconRef.current.appendChild(i);
-                    window.lucide.createIcons({ nodes: [i] });
+                    window.lucide.createIcons({ nodes: [iconRef.current] });
                 }
-            }, [name, size]);
-            return <div ref={iconRef} className={`inline-block leading-[0] ${className}`} style={{ width: size, height: size }}></div>;
+            }, [name]);
+            return <i ref={iconRef} data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
         };
 
         const AppLogo = ({ size = 32, className = "" }) => (
@@ -180,7 +154,8 @@
             const [bills, setBills] = useState([]);
             const [showModal, setShowModal] = useState(false);
             const [isLoggingIn, setIsLoggingIn] = useState(false);
-            const [authError, setAuthError] = useState(null);
+            const chartRef = useRef(null);
+            const chartInstance = useRef(null);
 
             useEffect(() => {
                 let unsubscribe = null;
@@ -190,40 +165,58 @@
                             setUser(u);
                             setLoading(false);
                             setIsLoggingIn(false);
-                            if (u) setAuthError(null);
                         });
                     } else if (window.fb_init_error) {
-                        setAuthError("Erro de Configuração: " + window.fb_init_error);
                         setLoading(false);
                     }
                 };
-
-                const handleError = (e) => {
-                    setAuthError(e.detail);
-                    setIsLoggingIn(false);
-                };
-
                 if (window.fb || window.fb_init_error) checkFB();
                 else window.addEventListener('firebase-ready', checkFB);
-                window.addEventListener('auth-error', handleError);
-
-                return () => {
-                    if (unsubscribe) unsubscribe();
-                    window.removeEventListener('firebase-ready', checkFB);
-                    window.removeEventListener('auth-error', handleError);
-                };
+                return () => unsubscribe && unsubscribe();
             }, []);
 
             useEffect(() => {
                 if (!user || !window.fb) return;
-                const { db, appId, collection, onSnapshot, query } = window.fb;
+                const { db, appId, collection, onSnapshot } = window.fb;
                 const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
-                const unsub = onSnapshot(query(colRef), (snap) => {
+                const unsub = onSnapshot(colRef, (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => console.error("Erro DB:", err));
+                });
                 return () => unsub();
             }, [user]);
+
+            // Gráfico
+            useEffect(() => {
+                if (view === 'dashboard' && chartRef.current && bills.length > 0) {
+                    const ctx = chartRef.current.getContext('2d');
+                    if (chartInstance.current) chartInstance.current.destroy();
+
+                    const totals = CATEGORIES.map(cat => ({
+                        label: cat.label,
+                        value: bills.filter(b => b.category === cat.id).reduce((acc, b) => acc + Number(b.value), 0),
+                        color: cat.color
+                    })).filter(t => t.value > 0);
+
+                    chartInstance.current = new Chart(ctx, {
+                        type: 'doughnut',
+                        data: {
+                            labels: totals.map(t => t.label),
+                            datasets: [{
+                                data: totals.map(t => t.value),
+                                backgroundColor: totals.map(t => t.color),
+                                borderWidth: 0,
+                                hoverOffset: 10
+                            }]
+                        },
+                        options: {
+                            cutout: '75%',
+                            plugins: { legend: { display: false } },
+                            maintainAspectRatio: false
+                        }
+                    });
+                }
+            }, [view, bills]);
 
             const totalPendente = useMemo(() => 
                 bills.filter(b => !b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0)
@@ -232,49 +225,23 @@
             const handleLogin = async () => {
                 if (!window.fb || isLoggingIn) return;
                 setIsLoggingIn(true);
-                setAuthError(null);
-                try {
-                    await window.fb.authenticate();
-                } catch (e) {
-                    setIsLoggingIn(false);
-                }
+                await window.fb.authenticate();
             };
 
             if (loading) return (
-                <div className="min-h-screen flex flex-col items-center justify-center bg-white p-8">
-                    <div className="w-12 h-12 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin mb-4"></div>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest text-center">A iniciar sistemas...</p>
+                <div className="min-h-screen flex flex-col items-center justify-center bg-white">
+                    <div className="w-10 h-10 border-4 border-slate-100 border-t-indigo-600 rounded-full animate-spin"></div>
                 </div>
             );
 
             if (!user) return (
                 <div className="min-h-screen bg-white flex flex-col items-center justify-center p-10 text-center fade-in">
-                    <div className="mb-12 p-8 bg-slate-50 rounded-[3.5rem]">
-                        <AppLogo size={90} className="text-slate-900" />
-                    </div>
+                    <div className="mb-12 p-8 bg-slate-50 rounded-[3.5rem]"><AppLogo size={80} className="text-slate-900" /></div>
                     <h1 className="text-4xl font-[900] text-slate-900 mb-4 tracking-tighter">Facturas Pro</h1>
-                    <p className="text-slate-400 text-sm mb-14 max-w-[280px] font-medium leading-relaxed">
-                        Faça a gestão das suas contas com a sua conta Google.
-                    </p>
-                    
-                    <button 
-                        onClick={handleLogin} 
-                        disabled={isLoggingIn || !!window.fb_init_error} 
-                        className="w-full max-w-xs p-5 rounded-2xl font-bold btn-google text-lg"
-                    >
-                        {isLoggingIn ? (
-                            <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                        ) : (
-                            <><Icon name="log-in" size={22} /><span className="ml-2">Entrar com Google</span></>
-                        )}
+                    <p className="text-slate-400 text-sm mb-12 max-w-[280px] font-medium leading-relaxed">Controle as suas despesas mensais com uma interface simples e poderosa.</p>
+                    <button onClick={handleLogin} disabled={isLoggingIn} className="w-full max-w-xs p-5 rounded-3xl font-bold btn-google text-lg flex items-center justify-center gap-3 active:scale-95 transition-all">
+                        {isLoggingIn ? <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <><Icon name="log-in" /><span>Entrar com Google</span></>}
                     </button>
-                    
-                    {authError && (
-                        <div className="mt-8 p-6 bg-rose-50 rounded-3xl border border-rose-100 max-w-xs">
-                            <Icon name="alert-triangle" className="text-rose-500 mb-2" />
-                            <p className="text-[11px] font-bold text-rose-600 uppercase tracking-tight leading-tight">{authError}</p>
-                        </div>
-                    )}
                 </div>
             );
 
@@ -282,42 +249,56 @@
                 <div className="min-h-screen pb-32 max-w-md mx-auto bg-[#fcfcfd] fade-in relative">
                     <header className="px-6 pt-12 pb-6 flex justify-between items-center">
                         <div>
-                            <h1 className="text-xl font-[900] text-slate-900">Olá, {user.displayName?.split(' ')[0]}</h1>
-                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Visão Geral</p>
+                            <h1 className="text-xl font-[900] text-slate-900 tracking-tight">
+                                {view === 'home' && `Olá, ${user.displayName?.split(' ')[0]}`}
+                                {view === 'dashboard' && 'Estatísticas'}
+                                {view === 'list' && 'Histórico'}
+                                {view === 'profile' && 'Minha Conta'}
+                            </h1>
+                            <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Facturas Pro v2.0</p>
                         </div>
-                        <button onClick={() => setView('profile')} className="w-12 h-12 rounded-2xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm flex items-center justify-center">
-                            {user.photoURL ? <img src={user.photoURL} className="w-full h-full object-cover" /> : <Icon name="user" />}
+                        <button onClick={() => setView('profile')} className="w-11 h-11 rounded-2xl bg-slate-100 overflow-hidden border border-slate-200 shadow-sm">
+                            {user.photoURL ? <img src={user.photoURL} className="w-full h-full object-cover" /> : <Icon name="user" className="mt-2" />}
                         </button>
                     </header>
 
-                    <main className="px-6 space-y-8 mt-4">
+                    <main className="px-6 space-y-8 mt-2">
                         {view === 'home' && (
                             <>
-                                <div className="dark-card p-10 text-white relative overflow-hidden">
-                                    <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-2">Total Pendente</p>
+                                <div className="premium-gradient-card p-10 text-white relative overflow-hidden">
+                                    <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest mb-1">Total Pendente</p>
                                     <div className="flex items-baseline gap-1">
                                         <h2 className="text-5xl font-[900] tracking-tighter">{totalPendente.toFixed(2)}</h2>
-                                        <span className="text-2xl font-bold text-indigo-400/60">€</span>
+                                        <span className="text-2xl font-bold text-indigo-400/40">€</span>
                                     </div>
-                                    <div className="absolute top-0 right-0 p-8 opacity-10"><Icon name="credit-card" size={100} /></div>
+                                    <div className="absolute -right-4 -bottom-4 opacity-10 rotate-12"><Icon name="wallet" size={120} /></div>
                                 </div>
 
                                 <div className="space-y-4">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">CONTAS POR PAGAR</h3>
-                                    {bills.filter(b => !b.paid).map(bill => (
-                                        <div key={bill.id} className="bill-card p-5 flex items-center justify-between shadow-sm">
+                                    <div className="flex justify-between items-end px-1">
+                                        <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Próximas Contas</h3>
+                                        <button onClick={() => setView('list')} className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">Ver Todas</button>
+                                    </div>
+                                    {bills.filter(b => !b.paid).length === 0 ? (
+                                        <div className="p-12 text-center border-2 border-dashed border-slate-100 rounded-[2.5rem]">
+                                            <p className="text-slate-400 text-xs font-bold">Não tens contas em falta. Bom trabalho!</p>
+                                        </div>
+                                    ) : bills.filter(b => !b.paid).slice(0, 4).map(bill => (
+                                        <div key={bill.id} className="bill-card p-5 flex items-center justify-between shadow-sm border border-slate-100">
                                             <div className="flex items-center gap-4">
                                                 <div className="w-12 h-12 bg-slate-50 text-indigo-600 rounded-2xl flex items-center justify-center border border-slate-100">
                                                     <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} />
                                                 </div>
                                                 <div>
                                                     <p className="font-bold text-sm text-slate-900">{bill.name}</p>
-                                                    <p className="text-[10px] font-bold text-rose-400 uppercase tracking-tight">Vence a {bill.due}</p>
+                                                    <p className="text-[10px] font-bold text-rose-500 uppercase">Vence a {bill.due}</p>
                                                 </div>
                                             </div>
                                             <div className="flex items-center gap-3">
                                                 <p className="font-black text-slate-900">{Number(bill.value).toFixed(2)}€</p>
-                                                <button onClick={() => window.fb.updateDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', bill.id), { paid: true })} className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-200"><Icon name="check" size={18} /></button>
+                                                <button onClick={() => window.fb.updateDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', bill.id), { paid: true })} className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg active:scale-90 transition-all">
+                                                    <Icon name="check" size={18} />
+                                                </button>
                                             </div>
                                         </div>
                                     ))}
@@ -325,18 +306,57 @@
                             </>
                         )}
 
+                        {view === 'dashboard' && (
+                            <div className="space-y-8 fade-in">
+                                <div className="bill-card p-8 text-center">
+                                    <div className="chart-container relative mb-6">
+                                        <canvas ref={chartRef}></canvas>
+                                        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase">Total Gasto</p>
+                                            <p className="text-3xl font-[900]">{bills.reduce((a, b) => a + Number(b.value), 0).toFixed(2)}€</p>
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-4 text-left">
+                                        {CATEGORIES.map(cat => {
+                                            const val = bills.filter(b => b.category === cat.id).reduce((acc, b) => acc + Number(b.value), 0);
+                                            if (val === 0) return null;
+                                            return (
+                                                <div key={cat.id} className="p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                                                    <p className="text-[9px] font-black uppercase text-slate-400 mb-1">{cat.label}</p>
+                                                    <p className="font-bold text-sm" style={{color: cat.color}}>{val.toFixed(2)}€</p>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                                <div className="bg-indigo-600 p-8 rounded-[2.5rem] text-white flex justify-between items-center shadow-xl shadow-indigo-100">
+                                    <div>
+                                        <p className="text-[10px] font-bold text-indigo-200 uppercase tracking-widest">Contas Pagas</p>
+                                        <h4 className="text-3xl font-[900]">{bills.filter(b => b.paid).length}</h4>
+                                    </div>
+                                    <div className="w-12 h-12 bg-white/20 rounded-2xl flex items-center justify-center"><Icon name="award" /></div>
+                                </div>
+                            </div>
+                        )}
+
                         {view === 'list' && (
                             <div className="space-y-4 fade-in">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">HISTÓRICO</h3>
-                                {bills.map(bill => (
-                                    <div key={bill.id} className={`bill-card p-4 flex items-center justify-between ${bill.paid ? 'opacity-50' : ''}`}>
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-xl bg-white border border-slate-100 flex items-center justify-center text-indigo-600"><Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={16} /></div>
-                                            <div><p className="font-bold text-sm">{bill.name}</p><p className="text-[9px] font-black text-slate-400 uppercase">{bill.due}</p></div>
+                                {bills.length === 0 ? (
+                                    <p className="text-center text-slate-400 py-20 font-bold">Sem histórico de faturas.</p>
+                                ) : bills.map(bill => (
+                                    <div key={bill.id} className={`bill-card p-5 flex items-center justify-between ${bill.paid ? 'bg-slate-50 border-transparent' : ''}`}>
+                                        <div className="flex items-center gap-4">
+                                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${bill.paid ? 'bg-white text-slate-300' : 'bg-slate-100 text-indigo-600'}`}>
+                                                <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={18} />
+                                            </div>
+                                            <div>
+                                                <p className={`font-bold text-sm ${bill.paid ? 'text-slate-400 line-through' : 'text-slate-900'}`}>{bill.name}</p>
+                                                <p className="text-[9px] font-black text-slate-400 uppercase">{bill.due} • {bill.paid ? 'Pago' : 'Pendente'}</p>
+                                            </div>
                                         </div>
                                         <div className="flex items-center gap-4">
-                                            <span className="font-black text-sm">{Number(bill.value).toFixed(2)}€</span>
-                                            <button onClick={() => window.fb.deleteDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', bill.id))} className="text-slate-300 p-2"><Icon name="trash-2" size={16}/></button>
+                                            <span className={`font-black text-sm ${bill.paid ? 'text-slate-400' : 'text-slate-900'}`}>{Number(bill.value).toFixed(2)}€</span>
+                                            <button onClick={() => window.fb.deleteDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', bill.id))} className="text-slate-200 hover:text-rose-500 transition-colors"><Icon name="trash-2" size={16}/></button>
                                         </div>
                                     </div>
                                 ))}
@@ -345,45 +365,84 @@
 
                         {view === 'profile' && (
                             <div className="text-center py-10 space-y-10 fade-in">
-                                <div className="w-32 h-32 bg-slate-100 rounded-[3rem] mx-auto flex items-center justify-center shadow-2xl border-4 border-white overflow-hidden">
-                                    {user.photoURL ? <img src={user.photoURL} className="w-full h-full object-cover" /> : <Icon name="user" size={56} />}
+                                <div className="relative inline-block">
+                                    <div className="w-32 h-32 bg-white p-2 rounded-[3rem] shadow-2xl border border-slate-100 mx-auto">
+                                        <div className="w-full h-full rounded-[2.5rem] overflow-hidden">
+                                            {user.photoURL ? <img src={user.photoURL} className="w-full h-full object-cover" /> : <Icon name="user" size={40} className="mt-8 text-slate-300" />}
+                                        </div>
+                                    </div>
+                                    <div className="absolute -bottom-1 -right-1 bg-emerald-500 w-8 h-8 rounded-full border-4 border-[#fcfcfd]"></div>
                                 </div>
-                                <div><h2 className="text-3xl font-[900] tracking-tight">{user.displayName}</h2><p className="text-slate-400 text-xs font-bold mt-1 uppercase tracking-widest">{user.email}</p></div>
-                                <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-slate-900 text-white p-6 rounded-3xl font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-xl shadow-slate-900/10"><Icon name="log-out" size={20} /> Terminar Sessão</button>
+                                <div>
+                                    <h2 className="text-3xl font-[900] tracking-tighter">{user.displayName || 'Utilizador'}</h2>
+                                    <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mt-1">{user.email}</p>
+                                </div>
+                                <div className="space-y-4">
+                                    <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-slate-900 text-white p-6 rounded-[2.2rem] font-black uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 transition-all shadow-xl shadow-slate-200">
+                                        <Icon name="log-out" size={20} /> Terminar Sessão
+                                    </button>
+                                    <p className="text-[10px] font-bold text-slate-300 uppercase tracking-[0.2em]">Facturas Pro 2.0.4 Premium</p>
+                                </div>
                             </div>
                         )}
                     </main>
 
+                    {/* Navigation Bar */}
                     <div className="fixed bottom-8 left-0 right-0 flex justify-center px-6 z-50">
-                        <nav className="w-full max-w-[340px] h-20 nav-glass rounded-[2.5rem] flex items-center justify-around shadow-2xl border border-white/80 px-4">
-                            <button onClick={() => setView('home')} className={`p-4 rounded-2xl ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="home" /></button>
-                            <button onClick={() => setShowModal(true)} className="w-16 h-16 bg-slate-900 text-white rounded-3xl flex items-center justify-center -mt-14 border-8 border-[#fcfcfd] shadow-2xl"><Icon name="plus" size={32} /></button>
-                            <button onClick={() => setView('list')} className={`p-4 rounded-2xl ${view === 'list' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="list" /></button>
-                            <button onClick={() => setView('profile')} className={`p-4 rounded-2xl ${view === 'profile' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="user" /></button>
+                        <nav className="w-full max-w-[340px] h-20 nav-glass rounded-[2.5rem] flex items-center justify-around shadow-2xl border border-white/80 px-2">
+                            <button onClick={() => setView('home')} className={`p-4 rounded-2xl transition-all ${view === 'home' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="home" /></button>
+                            <button onClick={() => setView('dashboard')} className={`p-4 rounded-2xl transition-all ${view === 'dashboard' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="pie-chart" /></button>
+                            
+                            <button onClick={() => setShowModal(true)} className="w-14 h-14 bg-slate-900 text-white rounded-[1.8rem] flex items-center justify-center shadow-xl active:scale-90 transition-transform"><Icon name="plus" size={28} /></button>
+                            
+                            <button onClick={() => setView('list')} className={`p-4 rounded-2xl transition-all ${view === 'list' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="list" /></button>
+                            <button onClick={() => setView('profile')} className={`p-4 rounded-2xl transition-all ${view === 'profile' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-300'}`}><Icon name="user" /></button>
                         </nav>
                     </div>
 
+                    {/* Modal para Adicionar */}
                     {showModal && (
-                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[100] flex items-end justify-center px-4">
+                        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xl z-[100] flex items-end justify-center px-4">
                             <div className="bg-white w-full max-w-md rounded-t-[3.5rem] p-10 animate-in slide-in-from-bottom duration-300 shadow-2xl">
-                                <div className="flex justify-between items-center mb-10"><h2 className="font-[900] text-3xl tracking-tighter">Nova Fatura</h2><button onClick={() => setShowModal(false)} className="p-3 bg-slate-100 rounded-2xl text-slate-500"><Icon name="x" size={24} /></button></div>
+                                <div className="flex justify-between items-center mb-8">
+                                    <h2 className="font-[900] text-2xl tracking-tighter">Nova Despesa</h2>
+                                    <button onClick={() => setShowModal(false)} className="p-3 bg-slate-50 rounded-2xl text-slate-400"><Icon name="x" /></button>
+                                </div>
                                 <form onSubmit={async (e) => {
                                     e.preventDefault();
                                     const f = new FormData(e.target);
                                     const id = "bill_" + Date.now();
                                     await window.fb.setDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', id), {
-                                        name: f.get('name'), value: f.get('value'), category: f.get('category'),
-                                        due: f.get('date'), paid: false, createdAt: Date.now()
+                                        name: f.get('name'), 
+                                        value: f.get('value'), 
+                                        category: f.get('category'),
+                                        due: f.get('date'), 
+                                        paid: false, 
+                                        createdAt: Date.now()
                                     });
                                     setShowModal(false);
-                                }} className="space-y-6">
-                                    <div className="space-y-2"><p className="text-[10px] font-black text-slate-400 ml-2 uppercase tracking-widest">Descrição</p><input name="name" className="w-full p-5 bg-slate-50 rounded-2xl font-bold border border-slate-100" required /></div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div className="space-y-2"><p className="text-[10px] font-black text-slate-400 ml-2 uppercase tracking-widest">Valor (€)</p><input name="value" type="number" step="0.01" className="w-full p-5 bg-slate-50 rounded-2xl font-bold border border-slate-100" required /></div>
-                                        <div className="space-y-2"><p className="text-[10px] font-black text-slate-400 ml-2 uppercase tracking-widest">Data</p><input name="date" type="date" className="w-full p-5 bg-slate-50 rounded-2xl font-bold border border-slate-100" required /></div>
+                                }} className="space-y-4">
+                                    <div className="space-y-1">
+                                        <p className="text-[9px] font-black text-slate-400 ml-2 uppercase tracking-widest">Descrição</p>
+                                        <input name="name" placeholder="Ex: Renda Casa" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none border border-transparent focus:border-indigo-100" required />
                                     </div>
-                                    <div className="space-y-2"><p className="text-[10px] font-black text-slate-400 ml-2 uppercase tracking-widest">Categoria</p><select name="category" className="w-full p-5 bg-slate-50 rounded-2xl font-bold border border-slate-100 custom-select">{CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}</select></div>
-                                    <button type="submit" className="w-full bg-slate-900 text-white p-6 rounded-3xl font-black uppercase tracking-widest mt-6 shadow-xl shadow-slate-200">Registar Conta</button>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-1">
+                                            <p className="text-[9px] font-black text-slate-400 ml-2 uppercase tracking-widest">Valor (€)</p>
+                                            <input name="value" type="number" step="0.01" placeholder="0.00" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none" required />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <p className="text-[9px] font-black text-slate-400 ml-2 uppercase tracking-widest">Vencimento</p>
+                                            <input name="date" type="date" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none text-xs" required />
+                                        </div>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <p className="text-[9px] font-black text-slate-400 ml-2 uppercase tracking-widest">Categoria</p>
+                                        <select name="category" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none text-slate-500 custom-select">
+                                            {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                                        </select>
+                                    </div>
+                                    <button type="submit" className="w-full bg-slate-900 text-white p-6 rounded-[2rem] font-black uppercase tracking-widest mt-6 shadow-xl active:scale-95 transition-all">Guardar Fatura</button>
                                 </form>
                             </div>
                         </div>

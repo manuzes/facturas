@@ -11,23 +11,14 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@0.321.0"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { 
-            getAuth, 
-            onAuthStateChanged, 
-            GoogleAuthProvider,
-            signInWithPopup,
-            signInWithRedirect,
-            getRedirectResult,
-            signOut, 
-            setPersistence, 
-            browserLocalPersistence,
-            signInWithCustomToken,
-            signInAnonymously
+            getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, 
+            signInWithRedirect, getRedirectResult, signOut, setPersistence, 
+            browserLocalPersistence, signInAnonymously 
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
@@ -41,28 +32,31 @@
 
                 await setPersistence(auth, browserLocalPersistence);
 
-                // Função de Login Refeita
                 const authenticate = async () => {
                     const provider = new GoogleAuthProvider();
                     try {
                         await signInWithPopup(auth, provider);
                     } catch (err) {
-                        console.warn("Popup bloqueado, a tentar redirecionamento...");
-                        await signInWithRedirect(auth, provider);
+                        console.warn("Auth falhou, a tentar anónimo ou redirect...");
+                        if (err.code === 'auth/unauthorized-domain') {
+                            await signInAnonymously(auth);
+                        } else {
+                            await signInWithRedirect(auth, provider);
+                        }
                     }
                 };
 
-                // Expor para o componente React
                 window.fb = { 
                     auth, db, appId, onAuthStateChanged, 
                     collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, query,
                     signOut, authenticate, getRedirectResult
                 };
                 
-                // Disparar evento para o React saber que está pronto
                 window.dispatchEvent(new CustomEvent('firebase-ready'));
             } catch (e) {
                 console.error("Erro Crítico Firebase:", e);
+                window.fb_init_error = true;
+                window.dispatchEvent(new CustomEvent('firebase-ready'));
             }
         };
 
@@ -114,8 +108,7 @@
         }
 
         .btn-google:hover { transform: translateY(-2px); box-shadow: 0 15px 30px rgba(15, 23, 42, 0.15); }
-        .btn-google:active { transform: scale(0.98); }
-
+        
         .custom-select {
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2394a3b8'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
             background-repeat: no-repeat;
@@ -142,9 +135,17 @@
             { id: 'outros', label: 'Outros', icon: 'more-horizontal' }
         ];
 
+        // Componente Icon mais estável para evitar erros de renderização
         const Icon = ({ name, size = 20, className = "" }) => {
-            useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [name]);
-            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+            const iconRef = useRef(null);
+            useEffect(() => {
+                if (window.lucide && iconRef.current) {
+                    window.lucide.createIcons({
+                        nodes: [iconRef.current]
+                    });
+                }
+            }, [name]);
+            return <i ref={iconRef} data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
         };
 
         const AppLogo = ({ size = 32, className = "" }) => (
@@ -163,58 +164,49 @@
             const [bills, setBills] = useState([]);
             const [showModal, setShowModal] = useState(false);
             const [isLoggingIn, setIsLoggingIn] = useState(false);
-            
-            const chartRef = useRef(null);
-            const chartInstance = useRef(null);
 
-            // Listener de Autenticação
             useEffect(() => {
                 let unsubscribe = null;
 
-                const startAuthListener = () => {
+                const checkFB = () => {
                     if (window.fb) {
                         unsubscribe = window.fb.onAuthStateChanged(window.fb.auth, (u) => {
                             setUser(u);
                             setLoading(false);
                             setIsLoggingIn(false);
                         });
-                        // Verificar resultados de redirect pendentes
-                        window.fb.getRedirectResult(window.fb.auth).catch(() => {});
+                    } else if (window.fb_init_error) {
+                        setLoading(false);
                     }
                 };
 
-                if (window.fb) {
-                    startAuthListener();
+                // Verifica imediatamente se já existe, caso contrário aguarda evento
+                if (window.fb || window.fb_init_error) {
+                    checkFB();
                 } else {
-                    window.addEventListener('firebase-ready', startAuthListener);
+                    window.addEventListener('firebase-ready', checkFB);
                 }
 
                 return () => {
                     if (unsubscribe) unsubscribe();
-                    window.removeEventListener('firebase-ready', startAuthListener);
+                    window.removeEventListener('firebase-ready', checkFB);
                 };
             }, []);
 
-            // Listener de Dados Firestore
             useEffect(() => {
                 if (!user || !window.fb) return;
                 const { db, appId, collection, onSnapshot, query } = window.fb;
-                
                 const colRef = collection(db, 'artifacts', appId, 'users', user.uid, 'bills');
-                const q = query(colRef);
                 
-                const unsub = onSnapshot(q, (snap) => {
+                const unsub = onSnapshot(query(colRef), (snap) => {
                     const data = snap.docs.map(d => ({ id: d.id, ...d.data() }));
                     setBills(data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
-                }, (err) => {
-                    console.error("Erro ao ler dados:", err);
-                });
+                }, (err) => console.error("Erro dados:", err));
                 
                 return () => unsub();
             }, [user]);
 
             const totalPendente = useMemo(() => bills.filter(b => !b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
-            const totalPago = useMemo(() => bills.filter(b => b.paid).reduce((acc, b) => acc + (Number(b.value) || 0), 0), [bills]);
 
             const handleLogin = async () => {
                 if (!window.fb || isLoggingIn) return;
@@ -222,7 +214,6 @@
                 try {
                     await window.fb.authenticate();
                 } catch (e) {
-                    console.error("Erro login:", e);
                     setIsLoggingIn(false);
                 }
             };
@@ -242,17 +233,9 @@
                     <h1 className="text-4xl font-[900] text-slate-900 mb-4 tracking-tighter">Facturas Pro</h1>
                     <p className="text-slate-400 text-sm mb-14 max-w-[280px] font-medium">Faça a gestão das suas contas de forma simples e segura.</p>
                     
-                    <button 
-                        onClick={handleLogin} 
-                        disabled={isLoggingIn}
-                        className="w-full max-w-xs p-5 rounded-2xl font-bold btn-google text-lg"
-                    >
-                        {isLoggingIn ? (
-                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                        ) : (
-                            <Icon name="log-in" size={20} />
-                        )}
-                        <span>{isLoggingIn ? 'A ligar...' : 'Entrar com Google'}</span>
+                    <button onClick={handleLogin} disabled={isLoggingIn} className="w-full max-w-xs p-5 rounded-2xl font-bold btn-google text-lg">
+                        {isLoggingIn ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div> : <Icon name="log-in" size={20} />}
+                        <span className="ml-2">{isLoggingIn ? 'A entrar...' : 'Entrar com Google'}</span>
                     </button>
                 </div>
             );
@@ -261,10 +244,10 @@
                 <div className="min-h-screen pb-32 max-w-md mx-auto bg-[#fcfcfd] fade-in relative">
                     <header className="px-6 pt-12 pb-6 flex justify-between items-center">
                         <div>
-                            <h1 className="text-xl font-[900] text-slate-900">Olá, {user.displayName?.split(' ')[0]}</h1>
+                            <h1 className="text-xl font-[900] text-slate-900">Olá, {user.displayName?.split(' ')[0] || 'Utilizador'}</h1>
                             <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mt-1">Gestão de Contas</p>
                         </div>
-                        <button onClick={() => setView('profile')} className="w-12 h-12 rounded-2xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm">
+                        <button onClick={() => setView('profile')} className="w-12 h-12 rounded-2xl bg-slate-100 overflow-hidden border-2 border-white shadow-sm flex items-center justify-center">
                             {user.photoURL ? <img src={user.photoURL} className="w-full h-full object-cover" /> : <Icon name="user" />}
                         </button>
                     </header>
@@ -295,10 +278,7 @@
                                             </div>
                                             <div className="flex items-center gap-3">
                                                 <p className="font-black text-slate-900">{Number(bill.value).toFixed(2)}€</p>
-                                                <button onClick={() => {
-                                                    const { db, appId, doc, updateDoc } = window.fb;
-                                                    updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id), { paid: true });
-                                                }} className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white">
+                                                <button onClick={() => window.fb.updateDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', bill.id), { paid: true })} className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white">
                                                     <Icon name="check" size={18} />
                                                 </button>
                                             </div>
@@ -324,10 +304,7 @@
                                         </div>
                                         <div className="flex items-center gap-4">
                                             <span className="font-black text-sm">{Number(bill.value).toFixed(2)}€</span>
-                                            <button onClick={() => {
-                                                const { db, appId, doc, deleteDoc } = window.fb;
-                                                deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
-                                            }} className="text-slate-300 hover:text-rose-500">
+                                            <button onClick={() => window.fb.deleteDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', bill.id))} className="text-slate-300 hover:text-rose-500">
                                                 <Icon name="trash-2" size={16}/>
                                             </button>
                                         </div>
@@ -341,7 +318,7 @@
                                 <div className="w-32 h-32 bg-slate-100 rounded-[3rem] mx-auto flex items-center justify-center shadow-2xl border-4 border-white overflow-hidden">
                                     {user.photoURL ? <img src={user.photoURL} className="w-full h-full object-cover" /> : <Icon name="user" size={56} />}
                                 </div>
-                                <h2 className="text-3xl font-[900]">{user.displayName}</h2>
+                                <h2 className="text-3xl font-[900]">{user.displayName || 'Utilizador'}</h2>
                                 <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-slate-900 text-white p-6 rounded-3xl font-black uppercase tracking-widest flex items-center justify-center gap-3">
                                     <Icon name="log-out" size={20} /> Terminar Sessão
                                 </button>
@@ -359,7 +336,7 @@
                         </nav>
                     </div>
 
-                    {/* Modal Adicionar */}
+                    {/* Modal */}
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xl z-[100] flex items-end justify-center">
                             <div className="bg-white w-full max-w-md rounded-t-[3.5rem] p-10 animate-in slide-in-from-bottom duration-300 shadow-2xl">
@@ -369,16 +346,15 @@
                                 </div>
                                 <form onSubmit={async (e) => {
                                     e.preventDefault();
-                                    const { db, appId, doc, setDoc } = window.fb;
                                     const f = new FormData(e.target);
                                     const id = "bill_" + Date.now();
-                                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), {
+                                    await window.fb.setDoc(window.fb.doc(window.fb.db, 'artifacts', window.fb.appId, 'users', user.uid, 'bills', id), {
                                         name: f.get('name'), value: f.get('value'), category: f.get('category'),
                                         due: f.get('date'), paid: false, createdAt: Date.now()
                                     });
                                     setShowModal(false);
                                 }} className="space-y-4">
-                                    <input name="name" placeholder="Descrição (ex: EDP)" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none" required />
+                                    <input name="name" placeholder="Descrição" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none" required />
                                     <div className="grid grid-cols-2 gap-4">
                                         <input name="value" type="number" step="0.01" placeholder="Valor €" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none" required />
                                         <input name="date" type="date" className="w-full p-5 bg-slate-50 rounded-2xl font-bold outline-none text-xs" required />

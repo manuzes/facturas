@@ -19,7 +19,6 @@
         import { 
             getAuth, 
             onAuthStateChanged, 
-            signInWithCustomToken, 
             GoogleAuthProvider,
             signInWithPopup,
             signInWithRedirect,
@@ -49,15 +48,12 @@
                     provider.setCustomParameters({ prompt: 'select_account' });
                     
                     try {
-                        // Tenta popup primeiro
                         await signInWithPopup(auth, provider);
                     } catch (err) {
-                        console.log("Popup bloqueado ou falhou, a tentar Redirect...", err.code);
-                        // Se o popup falhar (comum em sandboxes), usa redirect
+                        console.log("Popup falhou, a tentar Redirect...", err.code);
                         if (err.code === 'auth/popup-blocked' || err.code === 'auth/cancelled-popup-request') {
                             await signInWithRedirect(auth, provider);
                         } else {
-                            // Erro genérico - tenta redirect como última estância
                             await signInWithRedirect(auth, provider);
                         }
                     }
@@ -183,18 +179,25 @@
             const chartInstance = useRef(null);
 
             useEffect(() => {
-                const checkFB = setInterval(() => {
+                const setupAuth = () => {
                     if (window.fb) {
                         const { auth, onAuthStateChanged } = window.fb;
-                        const unsubscribe = onAuthStateChanged(auth, (u) => {
+                        return onAuthStateChanged(auth, (u) => {
                             setUser(u);
                             setLoading(false);
+                            setIsLoggingIn(false);
                         });
-                        clearInterval(checkFB);
-                        return () => unsubscribe();
                     }
-                }, 100);
-                return () => clearInterval(checkFB);
+                };
+
+                const unsubscribe = setupAuth();
+                if (!unsubscribe) {
+                    window.addEventListener('firebase-ready', () => {
+                        const unsub = setupAuth();
+                        return unsub;
+                    });
+                }
+                return () => unsubscribe && unsubscribe();
             }, []);
 
             useEffect(() => {
@@ -248,8 +251,7 @@
                     await window.fb.authenticate();
                 } catch (e) {
                     console.error("Erro no login:", e);
-                } finally {
-                    // Não resetamos loading aqui para evitar flicker se houver redirect
+                    setIsLoggingIn(false);
                 }
             };
 
@@ -385,54 +387,34 @@
                                     </div>
                                     <div className="h-[280px] w-full"><canvas ref={chartRef}></canvas></div>
                                 </div>
-                                
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="bg-indigo-600 p-6 rounded-[2.5rem] text-white">
-                                        <Icon name="trending-up" size={24} className="mb-4 opacity-50" />
-                                        <p className="text-[10px] font-bold uppercase opacity-60">Média Valor</p>
-                                        <p className="text-xl font-black mt-1">{(totalPendente / (bills.filter(b=>!b.paid).length || 1)).toFixed(2)}€</p>
-                                    </div>
-                                    <div className="bg-white p-6 rounded-[2.5rem] border border-slate-100">
-                                        <Icon name="layers" size={24} className="mb-4 text-indigo-600 opacity-20" />
-                                        <p className="text-[10px] font-bold text-slate-400 uppercase">Categorias</p>
-                                        <p className="text-xl font-black mt-1 text-slate-900">{new Set(bills.map(b=>b.category)).size}</p>
-                                    </div>
-                                </div>
                             </div>
                         )}
 
                         {view === 'list' && (
                             <div className="space-y-4 fade-in">
                                 <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">HISTÓRICO DE FACTURAS</h3>
-                                {bills.length === 0 ? (
-                                    <div className="text-center py-24 opacity-20">
-                                        <Icon name="archive" size={60} className="mx-auto mb-4" />
-                                        <p className="text-xs font-bold uppercase tracking-widest">Nada arquivado</p>
-                                    </div>
-                                ) : (
-                                    bills.map(bill => (
-                                        <div key={bill.id} className={`bill-card p-4 flex items-center justify-between ${bill.paid ? 'opacity-60 bg-slate-50/50' : 'border-indigo-50 shadow-sm'}`}>
-                                            <div className="flex items-center gap-3">
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${bill.paid ? 'text-slate-400 bg-slate-200' : 'text-indigo-600 bg-indigo-50'}`}>
-                                                    <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={16} />
-                                                </div>
-                                                <div>
-                                                    <p className={`font-bold text-sm ${bill.paid ? 'text-slate-500 line-through' : 'text-slate-900'}`}>{bill.name}</p>
-                                                    <p className="text-[9px] font-bold text-slate-400 uppercase">{bill.due}</p>
-                                                </div>
+                                {bills.map(bill => (
+                                    <div key={bill.id} className={`bill-card p-4 flex items-center justify-between ${bill.paid ? 'opacity-60 bg-slate-50/50' : 'border-indigo-50 shadow-sm'}`}>
+                                        <div className="flex items-center gap-3">
+                                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${bill.paid ? 'text-slate-400 bg-slate-200' : 'text-indigo-600 bg-indigo-50'}`}>
+                                                <Icon name={CATEGORIES.find(c => c.id === bill.category)?.icon || 'receipt'} size={16} />
                                             </div>
-                                            <div className="flex items-center gap-4">
-                                                <span className={`font-black text-sm ${bill.paid ? 'text-slate-500' : 'text-indigo-600'}`}>{Number(bill.value).toFixed(2)}€</span>
-                                                <button onClick={async () => {
-                                                    const { db, appId, doc, deleteDoc } = window.fb;
-                                                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
-                                                }} className="text-slate-300 hover:text-rose-500 p-2 transition-colors">
-                                                    <Icon name="trash-2" size={16}/>
-                                                </button>
+                                            <div>
+                                                <p className={`font-bold text-sm ${bill.paid ? 'text-slate-500 line-through' : 'text-slate-900'}`}>{bill.name}</p>
+                                                <p className="text-[9px] font-bold text-slate-400 uppercase">{bill.due}</p>
                                             </div>
                                         </div>
-                                    ))
-                                )}
+                                        <div className="flex items-center gap-4">
+                                            <span className={`font-black text-sm ${bill.paid ? 'text-slate-500' : 'text-indigo-600'}`}>{Number(bill.value).toFixed(2)}€</span>
+                                            <button onClick={async () => {
+                                                const { db, appId, doc, deleteDoc } = window.fb;
+                                                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', bill.id));
+                                            }} className="text-slate-300 hover:text-rose-500 p-2 transition-colors">
+                                                <Icon name="trash-2" size={16}/>
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
                         )}
 
@@ -446,21 +428,14 @@
                                             <Icon name="user" size={56} />
                                         )}
                                     </div>
-                                    <div className="absolute -bottom-2 -right-2 w-10 h-10 bg-indigo-600 rounded-2xl border-4 border-[#fcfcfd] flex items-center justify-center text-white shadow-lg">
-                                        <Icon name="check" size={16} />
-                                    </div>
                                 </div>
                                 <div>
                                     <h2 className="text-3xl font-[900] tracking-tight">{user.displayName || 'Utilizador Pro'}</h2>
                                     <p className="text-sm font-bold text-indigo-600 uppercase mt-2 tracking-[0.1em]">{user.email}</p>
                                 </div>
-                                
-                                <div className="space-y-3">
-                                    <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-slate-900 text-white p-6 rounded-3xl font-black uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 transition-transform shadow-xl shadow-slate-200">
-                                        <Icon name="log-out" size={20} /> Terminar Sessão
-                                    </button>
-                                    <p className="text-[10px] text-slate-300 font-bold uppercase tracking-widest">Sessão Segura Google</p>
-                                </div>
+                                <button onClick={() => window.fb.signOut(window.fb.auth)} className="w-full bg-slate-900 text-white p-6 rounded-3xl font-black uppercase tracking-widest flex items-center justify-center gap-3 shadow-xl">
+                                    <Icon name="log-out" size={20} /> Terminar Sessão
+                                </button>
                             </div>
                         )}
                     </main>
@@ -470,20 +445,19 @@
                         <nav className="w-full max-w-[340px] h-20 nav-glass rounded-[2.5rem] flex items-center justify-around shadow-2xl border border-white/80 px-4">
                             <button onClick={() => setView('home')} className={`p-4 rounded-2xl transition-all ${view === 'home' ? 'text-indigo-600 bg-indigo-50 shadow-inner' : 'text-slate-300'}`}><Icon name="home" /></button>
                             <button onClick={() => setView('stats')} className={`p-4 rounded-2xl transition-all ${view === 'stats' ? 'text-indigo-600 bg-indigo-50 shadow-inner' : 'text-slate-300'}`}><Icon name="pie-chart" /></button>
-                            <button onClick={() => setShowModal(true)} className="w-16 h-16 bg-slate-900 text-white rounded-3xl flex items-center justify-center -mt-12 border-8 border-[#fcfcfd] active:scale-90 transition-transform shadow-2xl shadow-indigo-200"><Icon name="plus" size={32} /></button>
+                            <button onClick={() => setShowModal(true)} className="w-16 h-16 bg-slate-900 text-white rounded-3xl flex items-center justify-center -mt-12 border-8 border-[#fcfcfd] shadow-2xl shadow-indigo-200"><Icon name="plus" size={32} /></button>
                             <button onClick={() => setView('list')} className={`p-4 rounded-2xl transition-all ${view === 'list' ? 'text-indigo-600 bg-indigo-50 shadow-inner' : 'text-slate-300'}`}><Icon name="list" /></button>
                             <button onClick={() => setView('profile')} className={`p-4 rounded-2xl transition-all ${view === 'profile' ? 'text-indigo-600 bg-indigo-50 shadow-inner' : 'text-slate-300'}`}><Icon name="user" /></button>
                         </nav>
                     </div>
 
-                    {/* Modal para adicionar */}
+                    {/* Modal */}
                     {showModal && (
                         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xl z-[100] flex items-end sm:items-center justify-center p-0 sm:p-6">
                             <div className="bg-white w-full max-w-md rounded-t-[3.5rem] sm:rounded-[3.5rem] p-10 animate-in slide-in-from-bottom duration-500 shadow-2xl">
-                                <div className="w-16 h-1.5 bg-slate-100 rounded-full mx-auto mb-10"></div>
                                 <div className="flex justify-between items-center mb-10">
                                     <h2 className="font-[900] text-3xl tracking-tighter">Nova Despesa</h2>
-                                    <button onClick={() => setShowModal(false)} className="p-3 bg-slate-50 text-slate-400 rounded-2xl hover:text-rose-500 transition-colors"><Icon name="x" size={24} /></button>
+                                    <button onClick={() => setShowModal(false)} className="p-3 bg-slate-50 text-slate-400 rounded-2xl"><Icon name="x" size={24} /></button>
                                 </div>
                                 <form onSubmit={async (e) => {
                                     e.preventDefault();
@@ -491,36 +465,20 @@
                                     const f = new FormData(e.target);
                                     const id = "bill_" + Date.now();
                                     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'bills', id), {
-                                        name: f.get('name'),
-                                        value: f.get('value'),
-                                        category: f.get('category'),
-                                        due: f.get('date'),
-                                        paid: false,
-                                        createdAt: Date.now()
+                                        name: f.get('name'), value: f.get('value'), category: f.get('category'),
+                                        due: f.get('date'), paid: false, createdAt: Date.now()
                                     });
                                     setShowModal(false);
                                 }} className="space-y-6">
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">O que vais pagar?</label>
-                                        <input name="name" placeholder="Ex: Renda da Casa" className="w-full p-6 bg-slate-50 rounded-3xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all text-lg" required />
-                                    </div>
+                                    <input name="name" placeholder="Descrição" className="w-full p-6 bg-slate-50 rounded-3xl font-bold border-none outline-none text-lg" required />
                                     <div className="grid grid-cols-2 gap-4">
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Quanto (€)</label>
-                                            <input name="value" type="number" step="0.01" placeholder="0.00" className="w-full p-6 bg-slate-50 rounded-3xl font-bold border-2 border-transparent focus:border-indigo-100 outline-none transition-all text-lg" required />
-                                        </div>
-                                        <div className="space-y-2">
-                                            <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Data Limite</label>
-                                            <input name="date" type="date" className="w-full p-6 bg-slate-50 rounded-3xl font-bold text-xs border-2 border-transparent focus:border-indigo-100 outline-none transition-all" required />
-                                        </div>
+                                        <input name="value" type="number" step="0.01" placeholder="Valor €" className="w-full p-6 bg-slate-50 rounded-3xl font-bold border-none outline-none text-lg" required />
+                                        <input name="date" type="date" className="w-full p-6 bg-slate-50 rounded-3xl font-bold text-xs border-none outline-none" required />
                                     </div>
-                                    <div className="space-y-2">
-                                        <label className="text-[10px] font-black text-slate-400 uppercase ml-2 tracking-widest">Categoria</label>
-                                        <select name="category" className="w-full p-6 bg-slate-50 rounded-3xl font-bold text-slate-500 custom-select border-2 border-transparent focus:border-indigo-100 outline-none transition-all">
-                                            {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
-                                        </select>
-                                    </div>
-                                    <button type="submit" className="w-full bg-slate-900 text-white p-7 rounded-[2.5rem] font-black uppercase tracking-[0.2em] shadow-2xl shadow-indigo-100 active:scale-95 transition-transform mt-8 text-lg">Registar Agora</button>
+                                    <select name="category" className="w-full p-6 bg-slate-50 rounded-3xl font-bold text-slate-500 custom-select border-none outline-none">
+                                        {CATEGORIES.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                                    </select>
+                                    <button type="submit" className="w-full bg-slate-900 text-white p-7 rounded-[2.5rem] font-black uppercase tracking-[0.2em] shadow-2xl mt-8 text-lg">Registar</button>
                                 </form>
                             </div>
                         </div>
